@@ -1,13 +1,43 @@
 ---
-title: Hello World
-description: Your first document
+title: Makaleler
+description: Codworks'teki tüm konuların indeksi — kategori seç, oradan devam et.
+order: 0
 ---
 
-Welcome to the docs! You can start writing documents in `/content/docs`.
+Bu bölüm sitedeki bütün makaleleri barındırır. Soldaki kenar çubuğu kategoriye,
+sağdaki içindekiler tablosu ise açık makalenin başlıklarına göre gezinmeni sağlar.
 
-## What is Next?
+## Kategoriler
 
 <Cards>
-  <Card title="Learn more about Next.js" href="https://nextjs.org/docs" />
-  <Card title="Learn more about Fumadocs" href="https://fumadocs.dev" />
+  <Card title="JavaScript" href="/kategori/javascript" description="Scope, closure, prototip zinciri, this bağlanması, event loop." />
+  <Card title="React" href="/kategori/react" description="Render modeli, hook kuralları, state yönetimi, memoization." />
+  <Card title="Next.js" href="/kategori/nextjs" description="App Router, Server Components, caching katmanları." />
+  <Card title="Genel" href="/kategori/genel" description="TypeScript, performans, erişilebilirlik, tarayıcı davranışı." />
 </Cards>
+
+## Makaleler nasıl okunur
+
+Her makale aynı beş katmanda ilerler. Kutucuğun rengi ve ikonu, o paragrafın
+hangi derinlikte olduğunu sen okumadan söyler:
+
+<Callout type="child">
+  Konunun sezgisel karşılığı. Jargon yok, benzetme var. Konuya ilk kez bakıyorsan
+  buradan başla.
+</Callout>
+
+<Callout type="frontend">
+  Aynı kavramın React ve Next.js tarafında nereye denk düştüğü.
+</Callout>
+
+<Callout type="interview">
+  Bu konudan gerçekte sorulan soru ve beklenen cevabın çerçevesi.
+</Callout>
+
+<Callout type="expert">
+  Spesifikasyon detayı, motor davranışı, kenar durumlar. İkinci okuyuşta buraya dön.
+</Callout>
+
+<Callout type="warning">
+  Sık yapılan hata ve onu üreten yanlış zihinsel model.
+</Callout>

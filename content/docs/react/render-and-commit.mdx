@@ -1,0 +1,504 @@
+---
+title: "Render & Commit"
+description: "React'in üç adımlı döngüsü, 'render' kelimesinin üç farklı anlamı, child'ların ne zaman yeniden render olduğu ve key'in aslında ne işe yaradığı."
+category: react
+level: baslangic-uzman
+tags: ["render", "commit", "reconciliation", "key", "memo", "purity", "React Compiler"]
+order: 1
+duration: 28
+updated: "2026-09-03"
+---
+
+React öğrenirken en çok kafa karıştıran şey, **"render" kelimesinin üç farklı
+anlamda kullanılmasıdır**: React'in senin fonksiyonunu çağırması, sonucun DOM'a
+yazılması ve tarayıcının ekrana çizmesi. Üçü ayrı adım, üçü ayrı maliyet — ve
+performans tartışmalarının çoğu bu üçünün karıştırılmasından çıkıyor.
+
+Bu makale önce temeli kuruyor (bileşen nedir, saflık neden zorunlu), sonra üç
+adımlı döngüyü ayırıyor, ardından iki klasik soruyu cevaplıyor: *parent render
+olunca child her zaman render olur mu* ve *`key` gerçekte ne yapar*.
+
+<Callout type="child">
+  Bir restoran düşün. Sen mutfaksın: sipariş gelince tabağı **hazırlarsın**.
+  Garson React: siparişi getirir, hazırladığın tabağı alır ve masaya **taşır**.
+  Ama masada zaten aynı tabak duruyorsa garson onu almaz, yerinde bırakır.
+
+  "Render" tabağı hazırlamak, "commit" masaya koymak. Tabağı her seferinde
+  hazırlaman, her seferinde masaya yeni bir şey konduğu anlamına gelmez.
+</Callout>
+
+## Temel: bileşen saf bir fonksiyondur
+
+React bileşeni, veri alıp JSX döndüren sıradan bir JavaScript fonksiyonudur.
+
+```jsx title="component.jsx"
+function Profil({ ad, yas }) {
+  return (
+    <div className="profil">
+      <h2>{ad}</h2>
+      <p>{yas} yaşında</p>
+    </div>
+  );
+}
+```
+
+JSX'in HTML'den ayrıldığı yerler kısa bir liste:
+
+| Kural | Örnek |
+|---|---|
+| Tek kök gerekir | `<>...</>` fragment ile sar |
+| `class` yerine `className` | `className="profil"` |
+| Tüm etiketler kapanır | `<img />`, `<li>...</li>` |
+| JS'e açılan pencere: `{ }` | `<h1>{kullanici.ad}</h1>` |
+| Stil bir nesnedir | `style={{ color: "red" }}` |
+
+Props yukarıdan aşağı akar ve **salt okunurdur**. Bir bileşen aldığı props'u
+değiştiremez.
+
+### Saflık zorunlu bir kural
+
+React, bileşenlerini **saf fonksiyon** kabul eder: aynı girdi her zaman aynı
+çıktıyı vermeli, ve render sırasında kendinden önce var olan hiçbir şey
+değişmemeli.
+
+```jsx title="purity.jsx"
+let sayac = 0;
+
+// ✗ Saf değil: render sırasında dışarıdaki değişkeni bozuyor
+function Kotu() {
+  sayac++;
+  return <p>{sayac}</p>;
+}
+
+// ✓ Saf: girdiyi props'tan alır, dışarıya dokunmaz
+function Iyi({ sayi }) {
+  return <p>{sayi}</p>;
+}
+```
+
+<Callout type="expert">
+  `StrictMode`'un geliştirmede bileşen fonksiyonunu **iki kez çağırması** tam
+  olarak bunu yakalamak içindir. Saf bir fonksiyonu iki kez çağırmak sonucu
+  değiştirmez; saf olmayan bir fonksiyonda ikinci çağrı farklı sonuç üretir ve
+  hatayı görünür kılar.
+
+  Bu React'in kaprisi değil, bir sözleşmenin ön koşulu: Concurrent React render'ı
+  **yarıda kesebilir, terk edebilir veya yeniden başlatabilir**. Yarıda
+  kesilebilen bir hesabın yan etkisi olamaz — yoksa yarım kalan hesabın izleri
+  ortada kalırdı. `useTransition`, `Suspense` ve Server Components'in
+  çalışabilmesi bu saflık garantisine dayanıyor.
+</Callout>
+
+## Render ile commit farkı
+
+Ekranda bir şeyin değişmesi her zaman üç adımdan geçer.
+
+<Pipeline
+  title="React'in üç adımı (+ tarayıcının dördüncüsü)"
+  steps={[
+    {
+      label: "TRIGGER",
+      detail: "İlk render (createRoot().render) ya da bir state güncellemesi.",
+    },
+    {
+      label: "RENDER",
+      detail: "React senin fonksiyonunu ÇAĞIRIR ve JSX'i hesaplar. DOM'a dokunmaz.",
+      tone: "var(--color-tone-frontend)",
+    },
+    {
+      label: "COMMIT",
+      detail: "Önceki sonuçla farkı kadar DOM işlemi uygulanır. Fark yoksa hiç.",
+      tone: "var(--color-tone-interview)",
+    },
+    {
+      label: "PAINT",
+      detail: "Tarayıcı ekranı yeniden çizer. Bu artık React'in işi değil.",
+      tone: "var(--color-tone-child)",
+    },
+  ]}
+/>
+
+**Render**, React'in senin bileşen fonksiyonunu çalıştırmasıdır. Sonuç bir JSX
+ağacıdır — yani tarif edilmiş bir UI, DOM değil. İç içe bileşen döndürüyorsan
+React onları da çağırır ve aşağı doğru özyinelemeli iner.
+
+**Commit**, o tarifi gerçek DOM'a uygulamaktır. İlk render'da React `appendChild`
+ile bütün düğümleri ekler. Sonraki render'larda ise **DOM'u son render sonucuna
+uydurmak için gereken minimum işlemi** yapar.
+
+<Callout type="warning">
+  Bu makalenin en önemli cümlesi: **render sonucu bir öncekiyle aynıysa React
+  DOM'a hiç dokunmaz.**
+
+  Yani "bileşen 60 kez render oldu" cümlesi tek başına bir performans sorunu
+  değildir. React fonksiyonu 60 kez çağırmış ama DOM'a hiçbir şey yazmamış
+  olabilir. Pahalı olan sırayla: **paint > commit > render**.
+</Callout>
+
+<ExampleCard
+  title="Commit gerçekten minimal mi?"
+  level="orta"
+  summary="Saniyede bir yeniden render olan bir bileşende input'a yazdığın metin kaybolmuyor. Sebebi commit'in seçici olması."
+>
+
+```jsx title="clock.jsx"
+function Saat({ zaman }) {
+  return (
+    <>
+      <h1>{zaman}</h1>
+      <input />
+    </>
+  );
+}
+```
+
+`zaman` her saniye değişiyor, yani `Saat` her saniye **render oluyor**. Her
+render'da `<input />` JSX'i yeniden üretiliyor. Ama commit aşamasında React,
+`<input>` elemanının tipi ve konumu değişmediğini görüyor ve o DOM düğümüne
+**dokunmuyor** — bu yüzden içine yazdığın metin, imleç konumu ve odak
+korunuyor.
+
+Sadece `<h1>`'in metin içeriği güncelleniyor.
+
+</ExampleCard>
+
+## Parent render olunca child her zaman render olur mu?
+
+**Varsayılan olarak evet.** Bir bileşen render olduğunda React, döndürdüğü
+ağaçtaki bütün child bileşenleri de çağırır — props'ları hiç değişmemiş olsa
+bile. React "bu prop değişti mi" diye tek tek bakmaz; ağacı yeniden hesaplar.
+
+Ama bu cümlenin iki önemli devamı var.
+
+### Devam 1: render ≠ DOM güncellemesi
+
+Child render oldu diye DOM'a bir şey yazılmadı. Yukarıdaki kural burada da
+geçerli: sonuç aynıysa commit boş geçer. Çoğu "gereksiz render" aslında ölçülebilir
+bir maliyet üretmez.
+
+### Devam 2: aynı element referansı render'ı atlatır
+
+React, bir child'ın element nesnesinin **önceki render'dakiyle aynı referans**
+olduğunu görürse o alt ağacı yeniden render etmeden atlar. Bu, `children` olarak
+geçirilen JSX'te doğal olarak gerçekleşir.
+
+<ExampleCard
+  title="memo'suz optimizasyon: composition"
+  level="uzman"
+  summary="Aynı problem, iki farklı yapı. İkincisinde PahaliListe hiç yeniden render olmuyor — üstelik memo yok."
+>
+
+```jsx title="composition.jsx"
+// ✗ Sayac her değiştiğinde PahaliListe de yeniden render olur
+function Sayfa() {
+  const [sayi, setSayi] = useState(0);
+  return (
+    <div>
+      <button onClick={() => setSayi(sayi + 1)}>{sayi}</button>
+      <PahaliListe />
+    </div>
+  );
+}
+
+// ✓ PahaliListe'nin element nesnesi Kabuk'un DIŞINDA üretiliyor.
+//   Kabuk render olduğunda children referansı aynı kalır → React atlar.
+function Sayfa() {
+  return (
+    <Kabuk>
+      <PahaliListe />
+    </Kabuk>
+  );
+}
+
+function Kabuk({ children }) {
+  const [sayi, setSayi] = useState(0);
+  return (
+    <div>
+      <button onClick={() => setSayi(sayi + 1)}>{sayi}</button>
+      {children}
+    </div>
+  );
+}
+```
+
+State'i, onu gerçekten kullanan en küçük bileşene indirmek — burada `Kabuk` —
+`memo` eklemekten hem daha ucuz hem daha sağlam bir çözümdür.
+
+</ExampleCard>
+
+### Devam 3: `React.memo`
+
+`memo`, props'ları **sığ olarak** (`Object.is`) karşılaştırır ve hepsi aynıysa
+render'ı atlar.
+
+```jsx title="memo.jsx"
+const Selam = memo(function Selam({ ad }) {
+  return <h1>Merhaba, {ad}!</h1>;
+});
+```
+
+Üç yerde sessizce işlevsiz kalır:
+
+| Durum | `memo` işe yarar mı |
+|---|---|
+| Bileşenin kendi state'i değişti | Hayır — yine render olur |
+| Kullandığı context değişti | Hayır — yine render olur |
+| Prop olarak obje/dizi/fonksiyon geçiliyor | Hayır — her render'da yeni referans |
+
+```jsx title="memo-broken.jsx"
+// ✗ memo tamamen boşa gidiyor: her render'da yeni nesne ve yeni fonksiyon
+<Profil kisi={{ ad, yas }} onTikla={() => sec(id)} />
+
+// ✓ Ya primitive geç
+<Profil ad={ad} yas={yas} onTikla={onTikla} />
+```
+
+Bu son satır [Kopyalama & Array
+Metotları](/docs/javascript/object-copy-array-methods) makalesindeki referans
+eşitliği kuralının doğrudan sonucudur: `{ ad, yas }` her render'da yeni bir
+nesnedir, `Object.is` `false` der.
+
+<Callout type="frontend">
+  **React Compiler 1.0** (Ekim 2025) bu tartışmayı büyük ölçüde bitirdi. Derleyici
+  bileşen ağacını build zamanında analiz edip memoizasyonu **tek tek JSX ifadesi
+  seviyesinde** kendisi ekliyor; `useMemo`, `useCallback` ve `memo`'yu elle
+  yazmaya çoğu durumda gerek kalmıyor.
+
+  İki uyarı: Compiler React 19 paketinin içinde **gelmiyor**, ayrı kurulan bir
+  build aracı (Next.js gibi kurulumlarda varsayılan açık geliyor). Ve
+  derleyicinin çalışabilmesi bileşenlerinin saf olmasına bağlı — saflık kuralını
+  bozuyorsan derleyici o bileşeni atlar.
+
+  Yani `memo` bilgisi hâlâ gerekli: derleyicinin *ne yaptığını* anlamak ve
+  derleyicisiz projelerde doğru kararı verebilmek için.
+</Callout>
+
+<Callout type="warning">
+  `memo`'yu her yere serpmek yaygın bir refleks ama React ekibinin tavsiyesi
+  tersi: **önce yapıyı düzelt.** State'i aşağı indir, JSX'i `children` olarak
+  geçir, gereksiz `useEffect` zincirlerini kaldır. `memo` ölçülmüş bir darboğaz
+  için son çare olmalı — çünkü kendisi de bir maliyet (her render'da prop
+  karşılaştırması) ve kırılgan (tek bir obje prop'u yeter).
+</Callout>
+
+## `key` gerçekte ne yapar?
+
+Buradaki asıl kavrayış listelerle ilgili değil: **React state'i bileşenin içinde
+tutmaz; ağaçtaki konumunda tutar.**
+
+Bunun üç sonucu var:
+
+| Durum | State |
+|---|---|
+| Aynı konumda aynı bileşen tipi | **Korunur** (props değişse bile) |
+| Aynı konumda farklı bileşen tipi | **Sıfırlanır** |
+| Aynı konum, farklı `key` | **Sıfırlanır** |
+
+`key` işte bu konum-temelli kimliği **ezmek** için var. React'e "bu, konumu ne
+olursa olsun aynı öğe" ya da tersine "bu artık başka bir öğe" demenin yolu.
+
+```jsx title="key-as-identity.jsx"
+// Kişi değişince form içeriği eskiden kalıyordu...
+<Sohbet kisi={secili} />
+
+// ...key verince React bunu yeni bir bileşen sayıyor ve state sıfırlanıyor
+<Sohbet key={secili.id} kisi={secili} />
+```
+
+### Listede `key` neden önemli?
+
+Liste elemanları **yer değiştirebilir, araya girebilir, silinebilir**. React'in
+"hangi eski öğe, hangi yeni öğedir" sorusunu cevaplayabilmesi için konumdan
+bağımsız bir kimliğe ihtiyacı var.
+
+Kural iki tane:
+
+1. **Key'ler kardeşler arasında benzersiz olmalı.** Farklı listelerde aynı key
+   kullanılabilir.
+2. **Key'ler değişmemeli.** Render sırasında üretme.
+
+### `index`'i key yapmak neden riskli?
+
+Çünkü index bir **kimlik değil, sadece sıradır**. Liste değişince aynı index
+başka bir veriyi işaret etmeye başlar — ama React o index'e bağlı DOM düğümünü ve
+state'i eski yerinde tutar.
+
+<ExampleCard
+  title="index key ile somut hata"
+  level="orta"
+  summary="Bir satırdaki input'a yazdığın metin, baştaki öğeyi silince başka satıra atlıyor."
+>
+
+```jsx title="index-key-bug.jsx"
+// ✗ index key
+{gorevler.map((gorev, i) => (
+  <Satir key={i} gorev={gorev} />   // her Satir'da bir <input /> var
+))}
+```
+
+Başlangıç: `[A, B, C]` → index `0, 1, 2`.
+Kullanıcı **B satırının** input'una "merhaba" yazıyor.
+Sonra **A siliniyor** → liste `[B, C]` → index `0, 1`.
+
+React'in gördüğü:
+
+| key | Önce | Sonra | React'in kararı |
+|---|---|---|---|
+| `0` | A | B | Aynı key → DOM düğümünü ve state'i **koru**, prop'u güncelle |
+| `1` | B | C | Aynı key → DOM düğümünü ve state'i **koru**, prop'u güncelle |
+| `2` | C | — | Kaldır |
+
+Sonuç: "merhaba" metni index `1`'in input'unda kalmıştı; artık orada **C**
+görünüyor. Metin yanlış göreve yapıştı.
+
+```jsx title="index-key-fix.jsx"
+// ✓ Veriden gelen kararlı kimlik
+{gorevler.map((gorev) => (
+  <Satir key={gorev.id} gorev={gorev} />
+))}
+```
+
+</ExampleCard>
+
+<Callout type="warning">
+  `key={Math.random()}` ise index'ten **daha kötüdür.** Key'ler hiçbir render'da
+  eşleşmez; React her seferinde tüm liste öğelerini ve DOM düğümlerini sıfırdan
+  yaratır. Sadece yavaş değil — her render'da input içerikleri, odak ve kaydırma
+  konumu sıfırlanır.
+
+  Aynı sebeple `key={JSON.stringify(item)}` de kırılgandır: verinin herhangi bir
+  alanı değişince kimlik değişir ve öğe baştan yaratılır.
+</Callout>
+
+**Index ne zaman kabul edilebilir?** Üç şartın hepsi sağlanıyorsa: liste
+**sıralanmıyor**, öğe **eklenip silinmiyor**, ve öğelerin **kendi state'i /
+input'u yok**. Statik bir menü listesi buna örnektir. Şartlardan biri bile
+şüpheliyse veriye bir `id` ekle.
+
+<Callout type="interview">
+  Bu konuda fark yaratan cevap, key'i "React'in uyarı vermemesi için" değil
+  **kimlik** olarak tanımlamaktır:
+
+  *"React state'i bileşenin içinde değil, ağaçtaki konumunda saklar. `key`, o
+  konum-temelli kimliği ezip 'bu öğe taşınsa da aynı öğedir' demenin yoludur.
+  Index kullanınca kimlik yine konuma bağlanır — yani key hiçbir şey çözmemiş
+  olur."*
+
+  Ek bir ayrıntı daha var: **`key` bileşene prop olarak gelmez.** React'in kendi
+  kullandığı bir ipucudur; `props.key` `undefined`'dır. Bileşenin içinde id'ye
+  ihtiyacın varsa ayrıca geçmen gerekir: `<Profil key={id} kullaniciId={id} />`.
+</Callout>
+
+## UI'ı ağaç olarak düşünmek
+
+React'in bakış açısında iki ayrı ağaç vardır ve ikisi de farklı soruyu cevaplar:
+
+- **Render ağacı:** Hangi bileşen hangisinin içinde render oluyor. Veri akışını
+  ve performans darboğazlarını burada okursun. Koşullu render nedeniyle her
+  render'da değişebilir.
+- **Modül bağımlılık ağacı:** Hangi dosya hangisini import ediyor. Bundle
+  boyutunu ve kod bölmeyi burada okursun.
+
+Bir bileşenin "state'i neden sıfırlandı" sorusu daima **render ağacındaki
+konumla** ilgilidir — dosya yapısıyla değil.
+
+## Mülakat soruları
+
+### Soru 1 — render mi commit mi?
+
+Bir bileşen saniyede 60 kez render oluyor ama DevTools Profiler'da DOM
+güncellemesi görünmüyor. Sorun var mı?
+
+**Cevap:** Muhtemelen yok. Render, React'in fonksiyonu çağırmasıdır; sonuç
+öncekiyle aynıysa commit aşamasında DOM'a hiç dokunulmaz. Maliyet sadece
+fonksiyonun çalışma süresidir. Gerçek sorun, render'ın *kendisi* pahalıysa
+(ağır hesap, büyük liste) ortaya çıkar.
+
+### Soru 2 — state neden sıfırlandı?
+
+```jsx title="q2.jsx"
+{isFancy ? <Counter tema="koyu" /> : <Counter tema="açık" />}
+```
+
+Checkbox'ı değiştirince sayaç sıfırlanıyor mu?
+
+**Cevap:** Hayır, **korunuyor**. İki dal da aynı konumda aynı bileşen tipini
+render ediyor; React bunu aynı bileşen sayar ve sadece prop'u günceller.
+Sıfırlanmasını istiyorsan `key` vermelisin.
+
+### Soru 3 — child render olur mu?
+
+```jsx title="q3.jsx"
+function Ebeveyn() {
+  const [n, setN] = useState(0);
+  return (
+    <>
+      <button onClick={() => setN(n + 1)}>{n}</button>
+      <Cocuk />          {/* hiç prop almıyor */}
+    </>
+  );
+}
+```
+
+**Cevap:** Evet, `Cocuk` her tıklamada yeniden render olur. React prop
+karşılaştırması yapmaz; ağacı yeniden hesaplar. Engellemek için `memo`, ya da
+daha iyisi `Cocuk`'u `children` olarak yukarıdan geçirmek.
+
+### Soru 4 — key ve state
+
+```jsx title="q4.jsx"
+{kullanicilar.map((k, i) => <Kart key={i} kullanici={k} />)}
+```
+
+Listenin **başına** yeni bir kullanıcı eklenirse ne olur?
+
+**Cevap:** Bütün key'ler kayar: eski index `0` artık yeni kullanıcıya denk gelir.
+React her satırın DOM düğümünü ve state'ini yerinde tutup props'ları günceller —
+yani her satır "başka birinin" state'ini devralır. Ayrıca gereksiz yere N satır
+güncellenir; kararlı key'de sadece bir satır eklenirdi.
+
+### Soru 5 — saflık
+
+```jsx title="q5.jsx"
+function Liste({ ogeler }) {
+  ogeler.sort((a, b) => a.ad.localeCompare(b.ad)); // ?
+  return ogeler.map((o) => <li key={o.id}>{o.ad}</li>);
+}
+```
+
+**Cevap:** Saf değil. `sort` diziyi **yerinde** sıralar, yani render sırasında
+props'u — dolayısıyla ebeveynin verisini — bozar. `StrictMode`'un çift çağrısında
+farklı sonuç üretebilir. Doğrusu `[...ogeler].sort(...)` veya `ogeler.toSorted(...)`.
+
+<CheatSheet
+  title="Özet"
+  rows={[
+    { term: "trigger", meaning: "İlk render veya bir state güncellemesi." },
+    { term: "render", meaning: "React senin fonksiyonunu çağırır, JSX hesaplar. DOM'a DOKUNMAZ." },
+    { term: "commit", meaning: "Farkı kadar DOM işlemi. Sonuç aynıysa hiçbir işlem yok." },
+    { term: "paint", meaning: "Tarayıcının ekranı çizmesi. Artık React'in işi değil." },
+    { term: "maliyet sırası", meaning: "paint > commit > render. 'Çok render oldu' tek başına sorun değil." },
+    { term: "saflık", meaning: "Aynı props → aynı JSX, yan etki yok. Concurrent React'in ön koşulu." },
+    { term: "StrictMode", meaning: "Geliştirmede fonksiyonu iki kez çağırır; saf olmayanı açığa çıkarır." },
+    { term: "child render", meaning: "Parent render olunca child VARSAYILAN OLARAK render olur." },
+    { term: "children bailout", meaning: "Element referansı aynıysa React o alt ağacı atlar." },
+    { term: "memo", meaning: "Props'u Object.is ile sığ karşılaştırır. Obje/fonksiyon prop'ta boşa gider." },
+    { term: "memo işlemez", meaning: "Kendi state'i veya context değişince yine render olur." },
+    { term: "React Compiler 1.0", meaning: "Ekim 2025. Memoizasyonu build'de kendi ekler; ayrı kurulur." },
+    { term: "state nerede", meaning: "Bileşenin içinde değil, AĞAÇTAKİ KONUMUNDA tutulur." },
+    { term: "key", meaning: "Konum-temelli kimliği ezer. Benzersiz ve KARARLI olmalı." },
+    { term: "index key riski", meaning: "Silme/ekleme/sıralamada state ve DOM yanlış öğeye yapışır." },
+    { term: "Math.random() key", meaning: "Daha da kötü: her render'da tüm liste sıfırdan yaratılır." },
+    { term: "key prop değildir", meaning: "props.key undefined. Id lazımsa ayrıca geç." },
+  ]}
+/>
+
+## Kaynaklar
+
+- [react.dev — Render and Commit](https://react.dev/learn/render-and-commit)
+- [react.dev — Describing the UI](https://react.dev/learn/describing-the-ui)
+- [react.dev — Rendering Lists](https://react.dev/learn/rendering-lists)
+- [react.dev — Preserving and Resetting State](https://react.dev/learn/preserving-and-resetting-state)
+- [react.dev — Keeping Components Pure](https://react.dev/learn/keeping-components-pure)
+- [react.dev — `memo`](https://react.dev/reference/react/memo)
+- [react.dev — React Compiler](https://react.dev/learn/react-compiler)

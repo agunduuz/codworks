@@ -1,0 +1,603 @@
+---
+title: "Event Loop"
+description: "Tek iş parçacığında nasıl eşzamanlı görünüyoruz: çağrı yığını, task ve microtask kuyrukları, render adımları ve ana iş parçacığını bloklamamanın modern yolları."
+category: javascript
+level: baslangic-uzman
+tags: ["event loop", "microtask", "macrotask", "setTimeout", "async", "await", "render", "performance"]
+order: 4
+duration: 32
+updated: "2026-08-31"
+---
+
+"JavaScript tek iş parçacıklıdır" cümlesi doğru ama yarım. Doğrusu şu:
+**senin kodunu çalıştıran tek bir iş parçacığı var; ama kodun içinde yaşadığı
+çalışma ortamı tek iş parçacıklı değil.** Ağ isteğini tarayıcı ayrı bir yerde
+yürütür, zamanlayıcıyı ayrı bir yerde sayar. Event loop, o ayrı yerlerde biten
+işlerin senin tek iş parçacığına hangi sırayla gireceğini belirleyen kuraldır.
+
+Bu makale o kuralı üç katmanda ele alıyor: mekanizmanın kendisi, spesifikasyonun
+görünmeyen yarısı olan render adımları, ve ana iş parçacığını bloklamamanın
+2026'daki doğru yolları.
+
+<Callout type="child">
+  Tek kasası olan bir market düşün. Kasiyer aynı anda tek müşteriye bakar — sıra
+  budur. Ama fırın arkada ekmek pişiriyor, kasap et tartıyor; onlar kasayı
+  meşgul etmiyor. İşleri bitince ürünü kasanın yanındaki rafa bırakıyorlar.
+  Kasiyer eldeki müşteriyi bitirir bitirmez rafa bakar. Event loop, o "rafa
+  bakma" alışkanlığıdır. Bir müşteri kasada bavul dolusu bozuk para sayarsa
+  market donar — fırın çalışsa bile kimse ilerleyemez.
+</Callout>
+
+## Üç parça: yığın, harici işler, kuyruk
+
+Philip Roberts'ın meşhur konuşmasındaki çerçeve hâlâ en açıklayıcı olanı:
+
+- **Çağrı yığını (call stack):** Şu an çalışan fonksiyonların üst üste dizildiği
+  tek yer. Her çağrı bir çerçeve iter, her `return` bir çerçeve çıkarır.
+- **Harici API'ler:** `setTimeout`, `fetch`, DOM olayları… Bunlar JavaScript
+  motorunun değil, **çalışma ortamının** (tarayıcı / Node) parçasıdır ve yığının
+  dışında yürür.
+- **Kuyruklar:** Harici iş bittiğinde callback'i doğrudan çalıştıramaz — yığın
+  meşgul olabilir. Onun yerine bir kuyruğa bırakır.
+
+Event loop'un tüm işi tek cümleyle anlatılır: **yığın boşaldığında kuyruktan bir
+iş al ve yığına koy.**
+
+```js title="event-loop-pseudo.js"
+while (true) {
+  const task = taskKuyrugu.al(); // yoksa bekle
+  calistir(task);
+
+  // Kritik: sadece bir tane değil, kuyruk BOŞALANA kadar
+  while (microtaskKuyrugu.doluMu()) {
+    calistir(microtaskKuyrugu.al());
+  }
+
+  if (renderZamaniGeldiMi()) {
+    renderAdimlariniCalistir();
+  }
+}
+```
+
+<Callout type="warning">
+  `setTimeout(fn, 100)` "100 ms sonra çalıştır" demez. **"100 ms geçmeden
+  kuyruğa koyma"** der. Kuyruğa girdikten sonra ne kadar bekleyeceği, yığının o
+  an ne yaptığına bağlıdır. Yani gecikme bir garanti değil, bir **alt sınırdır**.
+</Callout>
+
+## Bloklamak = donmuş sayfa
+
+Yığın boşalmadan kuyruktaki hiçbir şey çalışamaz. Render da çalışamaz.
+
+```js title="blocking.js"
+document.body.style.background = "red";
+
+const bitis = Date.now() + 3000;
+while (Date.now() < bitis) {
+  // 3 saniye boyunca yığın dolu
+}
+
+document.body.style.background = "blue";
+```
+
+Kırmızıyı **hiç görmezsin**. Çünkü DOM değişikliği hemen ekrana çizilmez; render
+adımları ancak yığın boşaldığında çalışır ve o ana kadar arka plan çoktan mavi
+olmuştur. Aynı sebeple, bu 3 saniye içinde tıkladığın hiçbir düğme tepki vermez —
+olay callback'leri kuyrukta bekler.
+
+<Callout type="interview">
+  "JavaScript asenkron bir dil midir?" sorusunun doğru cevabı **hayır**'dır.
+  Dilin kendisi baştan sona senkron çalışır; asenkronluk, çalışma ortamının
+  sağladığı API'ler ve event loop sayesinde ortaya çıkar. `Promise` bile
+  senkron bir nesnedir — asenkron olan, handler'ının **ne zaman** çağrıldığıdır.
+</Callout>
+
+## İki kuyruk: task ve microtask
+
+Tek bir kuyruk yok, en az iki tane var ve **öncelikleri eşit değil**.
+
+| | Task (makrotask) | Microtask |
+|---|---|---|
+| Kaynak | `setTimeout` · `setInterval` · DOM olayları · `<script>` · I/O | `Promise.then/catch/finally` · `await` · `queueMicrotask` · `MutationObserver` |
+| Ne zaman | Turda **bir tane** çalışır | Kuyruk **tamamen boşalana** kadar |
+| Araya render girer mi | Evet, girebilir | Hayır |
+
+Kural tek cümle: **her task'tan sonra, bir sonraki task'a veya render'a geçmeden
+önce microtask kuyruğu sonuna kadar boşaltılır.**
+
+<Pipeline
+  title="Bir event loop turu"
+  loop
+  steps={[
+    {
+      label: "TASK",
+      detail: "Kuyruktaki en eski makrotask baştan sona çalışır. Yarıda kesilmez.",
+    },
+    {
+      label: "MICROTASK",
+      detail: "Kuyruk boşalana kadar. Bu sırada eklenen yeni microtask'lar da aynı turda çalışır.",
+      tone: "var(--color-tone-interview)",
+    },
+    {
+      label: "RENDER",
+      detail: "Gerekliyse: rAF → stil → düzen → çizim. Genelde ekran tazeleme hızında.",
+      tone: "var(--color-tone-child)",
+    },
+  ]}
+/>
+
+<ExampleCard
+  title="Klasik sıralama sorusu"
+  level="orta"
+  summary="Bu beş satırın çıktısını doğru sıralayabiliyorsan event loop'un temelini biliyorsun demektir."
+>
+
+```js title="ordering.js"
+console.log("1: script başı");
+
+setTimeout(() => console.log("2: setTimeout"), 0);
+
+Promise.resolve()
+  .then(() => console.log("3: promise 1"))
+  .then(() => console.log("4: promise 2"));
+
+console.log("5: script sonu");
+```
+
+Çıktı:
+
+```txt
+1: script başı
+5: script sonu
+3: promise 1
+4: promise 2
+2: setTimeout
+```
+
+Neden: `<script>`'in tamamı **bir task**'tır. O task biterken (`5` yazıldıktan
+sonra) microtask kuyruğu boşaltılır — `3` ve `4` oradadır. `setTimeout` ise ayrı
+bir task olduğu için ancak bir sonraki turda gelir.
+
+</ExampleCard>
+
+Promise'in kendi mekaniği — durum makinesi, zincirleme, `Promise.all` ailesi —
+ayrı iki makalenin konusu: [Promise'ler](/docs/javascript/promises) ve
+[Promise API & async/await](/docs/javascript/promise-api-async-await).
+
+### Microtask açlığı (starvation)
+
+İki kuyruk arasındaki fark teorik değil. Kendini yeniden kuyruğa ekleyen bir
+microtask sayfayı **kilitler**; aynı şeyi `setTimeout` ile yaparsan kilitlenmez.
+
+```js title="starvation.js"
+// ✗ Sayfa donar: microtask kuyruğu hiç boşalmaz, render sırası hiç gelmez
+function acgozlu() {
+  queueMicrotask(acgozlu);
+}
+acgozlu();
+
+// ✓ Sayfa akıcı kalır: her tur bir task, aralarına render girebilir
+function nazik() {
+  setTimeout(nazik, 0);
+}
+nazik();
+```
+
+<Callout type="warning">
+  Bu, "microtask hızlıdır, onu kullan" sezgisinin neden yanlış olduğunu gösterir.
+  Microtask **öncelikli**dir, hızlı değil — ve öncelik, doğru kullanılmazsa
+  tarayıcıyı aç bırakır. Sonsuz veya çok uzun `Promise` zincirleri de aynı riski
+  taşır.
+</Callout>
+
+## `async` / `await` gerçekte ne yapıyor?
+
+`await`, kodu durdurmaz — fonksiyonu **askıya alır** ve geri kalanını bir
+microtask olarak kuyruğa koyar. Yani her `await` bir microtask sınırıdır.
+
+```js title="await-desugar.js"
+async function f() {
+  console.log("A");
+  await null;      // ← burada fonksiyon askıya alınır
+  console.log("B"); // ← bu satır bir microtask olarak kuyruğa girer
+}
+
+f();
+console.log("C");
+
+// A, C, B
+```
+
+`await null` yazmış olmamız önemli değil: `await` beklediği şey promise olmasa
+bile en az bir microtask turu harcar.
+
+<ExampleCard
+  title="await ile .then karışınca"
+  level="uzman"
+  summary="Aynı işi yapan iki yazımın sıralaması aynı değildir; fark, harcanan microtask turu sayısındadır."
+>
+
+```js title="await-vs-then.js"
+async function a() {
+  console.log("a1");
+  await b();
+  console.log("a2");
+}
+
+async function b() {
+  console.log("b1");
+}
+
+console.log("baş");
+a();
+Promise.resolve()
+  .then(() => console.log("p1"))
+  .then(() => console.log("p2"));
+console.log("son");
+```
+
+Çıktı:
+
+```txt
+baş
+a1
+b1
+son
+a2
+p1
+p2
+```
+
+`b()` gövdesi senkron çalışır (`b1`). `await b()` sonrası kalan kısım (`a2`)
+microtask kuyruğuna **`p1`'den önce** girer, çünkü `a()` çağrısı
+`Promise.resolve()` satırından önce gerçekleşti.
+
+</ExampleCard>
+
+<Callout type="expert">
+  Bu sıralama 2018'de değişti. Eskiden `await p` — `p` zaten bir promise olsa
+  bile — motorun iki ek promise yaratması yüzünden **üç microtask turu**
+  harcıyordu. V8 7.2 (Node 12) ile gelen "await optimizasyonu" bunu **tek tura**
+  indirdi ve değişiklik spesifikasyona da işlendi.
+
+  Pratik sonucu şudur: internetteki eski `await` sıralama sorularının cevapları
+  bugünkü motorlarda **yanlıştır**. Mülakatta bir sıralama sorusu gelirse
+  "hangi motor sürümü" diye sormak zayıflık değil, uzmanlık işaretidir.
+</Callout>
+
+## Render adımları — event loop'un görünmeyen yarısı
+
+Çoğu anlatım "task → microtask" ile biter. Oysa turun üçüncü ve en çok gözden
+kaçan parçası render'dır. Tarayıcı bunu her turda değil, genelde ekran tazeleme
+hızında (60 Hz'de ~16.7 ms'de bir) çalıştırır.
+
+<Pipeline
+  title="Render adımları (turun üçüncü parçası)"
+  steps={[
+    {
+      label: "rAF",
+      detail: "Çizimden hemen önceki son JavaScript fırsatı.",
+    },
+    {
+      label: "OBSERVERS",
+      detail: "ResizeObserver ve IntersectionObserver, düzen hesabından sonra çalışır.",
+      tone: "var(--color-tone-child)",
+    },
+    {
+      label: "STİL",
+      detail: "Hangi kurala hangi elemanın uyduğu hesaplanır.",
+      tone: "var(--color-tone-frontend)",
+    },
+    {
+      label: "DÜZEN (LAYOUT)",
+      detail: "Her elemanın geometrisi — konum ve boyut — hesaplanır.",
+      tone: "var(--color-tone-interview)",
+    },
+    {
+      label: "ÇİZİM (PAINT)",
+      detail: "Pikseller ekrana aktarılır. Kullanıcı ancak burada bir şey görür.",
+      tone: "var(--color-tone-warning)",
+    },
+  ]}
+/>
+
+Bu sıra iki günlük gizemi açıklıyor:
+
+**1. Aynı turda yapılan DOM değişiklikleri tek seferde çizilir.**
+
+```js title="batched-paint.js"
+el.style.transform = "translateX(0px)";
+el.style.transform = "translateX(100px)";
+// Kullanıcı sadece 100px'i görür — arada çizim yok
+```
+
+**2. Ölçüm okumak, bekleyen değişiklikleri zorla hesaplatır.**
+
+```js title="layout-thrashing.js"
+// ✗ Her tur bir yazma + bir okuma → her seferinde düzen yeniden hesaplanır
+for (const kutu of kutular) {
+  kutu.style.width = kutu.offsetWidth + 10 + "px";
+}
+
+// ✓ Önce hepsini oku, sonra hepsini yaz
+const genislikler = kutular.map((k) => k.offsetWidth);
+kutular.forEach((k, i) => (k.style.width = genislikler[i] + 10 + "px"));
+```
+
+<Callout type="frontend">
+  React'in state güncellemelerini toplu işlemesi (batching) tam olarak bu
+  modelin üstüne kuruludur: bir olay handler'ı içindeki üç `setState` çağrısı üç
+  render tetiklemez, aynı turda birleştirilir.
+
+  `useEffect` ile `useLayoutEffect` arasındaki fark da buradan gelir:
+  `useLayoutEffect` **çizimden önce** senkron çalışır (yukarıdaki şeritte
+  "Düzen" ile "Çizim" arasında), `useEffect` ise çizimden sonraya bırakılır.
+  Bu yüzden ölçüm alıp DOM'u düzelten kod `useLayoutEffect`'e girer — aksi
+  hâlde kullanıcı bir kare boyunca yanlış konumu görür ve göz kırpması
+  (flicker) oluşur.
+</Callout>
+
+<ExampleCard
+  title="Neden ilerleme çubuğum hareket etmiyor?"
+  level="orta"
+  summary="Ağır işi bölmeden yazdığında yüzde göstergesi 0'dan 100'e sıçrar; arada hiçbir kare çizilmez."
+>
+
+```js title="progress.js"
+// ✗ Döngü boyunca yığın dolu → tek bir çizim bile olmaz
+function agir() {
+  for (let i = 0; i <= 100; i++) {
+    cok_agir_hesap();
+    cubuk.style.width = i + "%"; // hiçbiri görünmez
+  }
+}
+
+// ✓ Her adımı ayrı bir task yap → aralarına render girebilir
+async function bolerek() {
+  for (let i = 0; i <= 100; i++) {
+    cok_agir_hesap();
+    cubuk.style.width = i + "%";
+    await yieldToMain(); // aşağıda tanımlı
+  }
+}
+```
+
+</ExampleCard>
+
+## `setTimeout`'un ince ayarları
+
+<Callout type="warning">
+  **4 ms kelepçesi.** İç içe **beşinci** `setTimeout` çağrısından itibaren
+  tarayıcı `0` yazsan da en az 4 ms bekletir. Bu, kendini sürekli yeniden
+  zamanlayan kodun tarayıcıyı aç bırakmasını engellemek için HTML
+  spesifikasyonunda tanımlıdır.
+
+  **Arka plan sekmesi kısıtlaması.** Sekme görünmezse zamanlayıcılar saniyede
+  bire düşer; Chrome'da "yoğun kısıtlama" devreye girerse dakikada bire kadar
+  iner. Arka planda çalışan bir sayacın gerçek zamanı `Date.now()` ile
+  doğrulanmalıdır, tur sayısıyla değil.
+
+  **32-bit taşması.** Gecikme işaretli 32-bit tam sayıya çevrilir; üst sınır
+  `2147483647` ms (~24.8 gün). Daha büyük bir değer verirsen taşar ve callback
+  **hemen** çalışabilir.
+</Callout>
+
+## Bloklamamanın modern yolları
+
+Bir task'ın 50 ms'yi aşan kısmı **uzun task (long task)** sayılır ve doğrudan
+INP puanını (Interaction to Next Paint) bozar. Çözüm işi bölmek, yani **ana iş
+parçacığını geri vermek**.
+
+### `setTimeout(0)` neden yeterli değil
+
+`setTimeout` ile geri verdiğinde, devam kodun **kuyruğun sonuna** gider. Araya
+o an kuyrukta olan her şey — üçüncü taraf script'ler dahil — girer. İş sırası
+korunmaz.
+
+### `scheduler.yield()`
+
+Modern cevap bu. Geri verir ama devam kodunu **öncelikli bir devam kuyruğuna**
+koyar; yani tarayıcı kullanıcı etkileşimini işler, sonra senin işine geri döner —
+kuyruğun sonuna atılmadan.
+
+<ExampleCard
+  title="Süre bütçeli bölme (chunking) kalıbı"
+  level="uzman"
+  summary="Her adımda geri vermek pahalıdır; doğru kalıp, 50 ms'yi aştığında geri vermektir."
+>
+
+```js title="yield-pattern.js"
+function yieldToMain() {
+  if (globalThis.scheduler?.yield) {
+    return scheduler.yield();
+  }
+  // Desteklenmeyen tarayıcılarda geri düşüş
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function isleriCalistir(isler, butce = 50) {
+  let sonGeriVerme = performance.now();
+
+  for (const is of isler) {
+    is();
+
+    if (performance.now() - sonGeriVerme > butce) {
+      await yieldToMain();
+      sonGeriVerme = performance.now();
+    }
+  }
+}
+```
+
+Her turda geri vermek yerine süre ölçmek, geri verme maliyetini minimumda
+tutarken hiçbir task'ın 50 ms eşiğini aşmamasını sağlar.
+
+</ExampleCard>
+
+<Callout type="expert">
+  `scheduler.postTask()` bir adım ötesidir: işi üç öncelikten biriyle
+  kuyruklarsın — `user-blocking`, `user-visible`, `background` — ve
+  `TaskController` ile sonradan iptal edebilir veya önceliğini değiştirebilirsin.
+
+  Bir zamanlar önerilen `navigator.scheduling.isInputPending()` ise **artık
+  önerilmiyor**: bekleyen girdi olup olmadığına bakıp koşullu geri vermek,
+  animasyon gibi girdi sayılmayan işleri kaçırıyor. Doğrusu koşulsuz geri
+  vermektir.
+
+  Ve asıl gerçek: bölme, işi *daha hızlı* yapmaz — sadece araya girilebilir
+  kılar. CPU'ya gerçekten yüklenen bir iş için tek doğru cevap **Web Worker**'dır,
+  çünkü orası ayrı bir iş parçacığıdır ve ana iş parçacığını hiç görmez.
+</Callout>
+
+## Node.js'te aynı değil
+
+Tarayıcıdaki "task kuyruğu" Node'da **altı fazlı bir döngüdür** (libuv). Her faz
+kendi kuyruğunu işler:
+
+<Pipeline
+  title="Node.js event loop fazları"
+  loop
+  steps={[
+    { label: "TIMERS", detail: "setTimeout ve setInterval callback'leri." },
+    { label: "PENDING", detail: "Ertelenmiş sistem callback'leri (ör. bazı TCP hataları)." },
+    { label: "POLL", detail: "Yeni I/O olayları alınır ve callback'leri çalıştırılır.", tone: "var(--color-tone-child)" },
+    { label: "CHECK", detail: "setImmediate callback'leri.", tone: "var(--color-tone-frontend)" },
+    { label: "CLOSE", detail: "Kapanma handler'ları (ör. socket 'close').", tone: "var(--color-tone-interview)" },
+  ]}
+/>
+
+<Callout type="expert">
+  Node'un iki ek kuralı var:
+
+  1. **`process.nextTick` microtask'lardan da önceliklidir.** Her faz geçişinde
+     önce `nextTick` kuyruğu, sonra promise microtask kuyruğu boşaltılır. Kendini
+     yeniden kuyruğa ekleyen bir `nextTick` event loop'u tamamen aç bırakır.
+  2. **`setTimeout(fn, 0)` ile `setImmediate(fn)` arasındaki sıra ana modülde
+     belirsizdir** — sürecin başlama süresine bağlıdır ve çalıştırdıkça değişir.
+     Ama bir I/O callback'inin içinde sıra **kesindir**: `setImmediate` her zaman
+     önce çalışır, çünkü poll fazından hemen sonra check fazı gelir.
+
+  Bu yüzden tarayıcıda doğru olan bir sıralama cevabı Node'da yanlış olabilir.
+  Sıralama sorusuna cevap verirken hangi ortamdan konuşulduğunu netleştirmek
+  gerekir.
+</Callout>
+
+## Mülakat soruları
+
+### Soru 1 — döngüde `setTimeout`
+
+```js title="q1.js"
+for (var i = 0; i < 3; i++) {
+  setTimeout(() => console.log(i), 0);
+}
+
+for (let j = 0; j < 3; j++) {
+  setTimeout(() => console.log(j), 0);
+}
+```
+
+**Cevap:** `3 3 3` sonra `0 1 2`.
+
+**Neden:** Bu soru event loop ile closure'ın kesiştiği yerdedir. Her iki
+döngüde de callback'ler **döngü bittikten sonra** çalışır. `var` tek bir
+fonksiyon-scope değişkeni yarattığı için üç callback aynı `i`'yi görür ve o da
+`3`'tür. `let` her yinelemede yeni bir blok bağlaması yarattığı için her callback
+kendi `j`'sini kapatır. (Bkz. [Scope & Closure](/docs/javascript/scope-closure))
+
+### Soru 2 — karışık sıralama
+
+```js title="q2.js"
+console.log("A");
+
+setTimeout(() => console.log("B"), 0);
+
+Promise.resolve().then(() => {
+  console.log("C");
+  setTimeout(() => console.log("D"), 0);
+});
+
+queueMicrotask(() => console.log("E"));
+
+console.log("F");
+```
+
+**Cevap:** `A F C E B D`.
+
+**Neden:** Senkron kısım `A` ve `F`. Ardından microtask kuyruğu sırayla boşalır:
+`C`, sonra `E`. `C` içinde eklenen `setTimeout` kuyruğun **sonuna** gider, bu
+yüzden zaten bekleyen `B`'den sonra gelir.
+
+### Soru 3 — hangisi sayfayı dondurur?
+
+```js title="q3.js"
+// A
+setInterval(() => {}, 0);
+
+// B
+(function döngü() {
+  Promise.resolve().then(döngü);
+})();
+```
+
+**Cevap:** `B`. `A`'da her tur bir task çalışır ve aralarına render ile olay
+işleme girebilir. `B`'de microtask kuyruğu hiç boşalmadığı için event loop bir
+sonraki adıma asla geçemez.
+
+### Soru 4 — `element.click()` ile gerçek tıklama farkı
+
+Aynı elemana iki `click` dinleyicisi bağlı ve her biri bir `Promise.then`
+kuyruklıyor. Kullanıcı gerçekten tıklarsa sıra
+`click → promise → click → promise`; kod içinden `el.click()` çağrılırsa sıra
+`click → click → promise → promise` olur.
+
+**Neden:** Microtask kuyruğu ancak **JavaScript yığını boşaldığında** boşaltılır.
+Gerçek tıklamada her dinleyici tarayıcı tarafından ayrı ayrı çağrılır ve arada
+yığın boşalır. `el.click()` çağrısında ise senin script'in yığında durmaya devam
+eder; iki dinleyici de bitmeden microtask sırası gelmez.
+
+### Soru 5 — `await` kaç tur harcar?
+
+```js title="q5.js"
+async function f() {
+  await Promise.resolve();
+  console.log("f");
+}
+f();
+Promise.resolve().then(() => console.log("p1")).then(() => console.log("p2"));
+```
+
+**Cevap (modern motorlarda):** `f p1 p2`. `await`, hazır bir promise için tek
+microtask turu harcar. V8 7.2 öncesinde üç tur harcadığı için cevap `p1 p2 f`
+idi — internetteki eski cevaplar bu yüzden yanlıştır.
+
+<CheatSheet
+  title="Özet"
+  rows={[
+    { term: "call stack", meaning: "Çalışan fonksiyonların tek yığını. Boşalmadan kuyruk işlenmez." },
+    { term: "task", meaning: "setTimeout, DOM olayı, script. Turda bir tane çalışır." },
+    { term: "microtask", meaning: "Promise, await, queueMicrotask, MutationObserver. Kuyruk boşalana kadar." },
+    { term: "tur sırası", meaning: "Bir task → tüm microtask'lar → (gerekliyse) render." },
+    { term: "render adımları", meaning: "rAF → Resize/Intersection → stil → düzen → çizim." },
+    { term: "starvation", meaning: "Kendini kuyruklayan microtask sayfayı dondurur; setTimeout dondurmaz." },
+    { term: "await", meaning: "Fonksiyonu askıya alır, kalanı microtask yapar. Hazır promise için 1 tur." },
+    { term: "setTimeout(fn, n)", meaning: "n ms alt sınırdır, garanti değil. 5. iç içe çağrıdan sonra min 4 ms." },
+    { term: "long task", meaning: "50 ms'yi aşan task. INP'yi doğrudan bozar." },
+    { term: "scheduler.yield()", meaning: "Geri verir ama devam kodunu öncelikli sırada tutar." },
+    { term: "setTimeout(0) ile geri verme", meaning: "Devam kodu kuyruğun sonuna gider; sıra kaybolur." },
+    { term: "Web Worker", meaning: "Gerçek paralellik. CPU'ya yüklenen iş için tek doğru cevap." },
+    { term: "useLayoutEffect", meaning: "Çizimden önce senkron çalışır; useEffect çizimden sonra." },
+    { term: "process.nextTick", meaning: "Node'a özel, promise microtask'larından da öncelikli." },
+    { term: "setImmediate", meaning: "Node check fazı. I/O callback'i içinde setTimeout(0)'ı hep yener." },
+  ]}
+/>
+
+## Kaynaklar
+
+- [javascript.info — Event loop: microtasks and macrotasks](https://javascript.info/event-loop)
+- [javascript.info — Microtasks](https://javascript.info/microtask-queue)
+- [Philip Roberts — What the heck is the event loop anyway? (JSConf EU)](https://www.youtube.com/watch?v=8aGhZQkoFbQ)
+- [Jake Archibald — Tasks, microtasks, queues and schedules](https://jakearchibald.com/2015/tasks-microtasks-queues-and-schedules/)
+- [MDN — `setTimeout()` ve gecikme sebepleri](https://developer.mozilla.org/en-US/docs/Web/API/Window/setTimeout)
+- [web.dev — Optimize long tasks](https://web.dev/articles/optimize-long-tasks)
+- [V8 — Faster async functions and promises](https://v8.dev/blog/fast-async)
+- [Node.js — The Node.js Event Loop](https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick)

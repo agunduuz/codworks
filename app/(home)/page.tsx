@@ -1,16 +1,23 @@
-import Link from 'next/link';
+import { categories } from '@/lib/categories';
+import { countArticles, getRecentArticles, source } from '@/lib/source';
+import { Hero } from '@/components/site/hero';
+import { LayerLegend } from '@/components/site/layer-legend';
+import { CategoryGrid } from '@/components/site/category-grid';
+import { RecentArticles } from '@/components/site/recent-articles';
+import { StartHere } from '@/components/site/start-here';
 
 export default function HomePage() {
+  const counts = Object.fromEntries(
+    categories.map((category) => [category.slug, countArticles(category.slug)]),
+  );
+
   return (
-    <div className="flex flex-col justify-center text-center flex-1">
-      <h1 className="text-2xl font-bold mb-4">Hello World</h1>
-      <p>
-        You can open{' '}
-        <Link href="/docs" className="font-medium underline">
-          /docs
-        </Link>{' '}
-        and see the documentation.
-      </p>
-    </div>
+    <>
+      <Hero articleCount={source.getPages().length} categoryCount={categories.length} />
+      <LayerLegend />
+      <CategoryGrid counts={counts} />
+      <RecentArticles pages={getRecentArticles(5)} />
+      <StartHere />
+    </>
   );
 }

@@ -1,4 +1,13 @@
 {
   "title": "JavaScript",
-  "pages": ["scope-closure", "object-methods-this"]
+  "icon": "Braces",
+  "pages": [
+    "scope-closure",
+    "object-methods-this",
+    "function-binding",
+    "event-loop",
+    "promises",
+    "promise-api-async-await",
+    "object-copy-array-methods"
+  ]
 }

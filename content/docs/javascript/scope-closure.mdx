@@ -1,0 +1,119 @@
+---
+title: Scope & Closure
+description: Değişkenin nerede görüldüğü, fonksiyonun neyi hatırladığı ve bu ikisinin mülakatta neden aynı soru olduğu.
+category: javascript
+level: baslangic-uzman
+tags: ["scope", "closure", "hoisting", "TDZ"]
+order: 1
+duration: 14
+updated: "2026-08-26"
+---
+
+Scope, bir değişkenin **nereden görülebildiğidir**. Closure ise bir fonksiyonun,
+tanımlandığı scope'u **yanında taşımasıdır**. İkisi ayrı konu gibi anlatılır ama
+tek bir mekanizmanın iki yüzüdür.
+
+<Callout type="child">
+  Bir apartman düşün. Her dairenin içindeki eşyayı sadece o dairede oturanlar
+  görür; apartman girişindeki panoyu ise herkes görür. Scope budur. Closure ise:
+  daireden taşındıktan sonra bile o dairenin anahtarını cebinde tutmandır — kapı
+  hâlâ açılır.
+</Callout>
+
+## Üç scope türü
+
+JavaScript'te bir değişkenin yaşadığı üç yer vardır:
+
+| Tür | Ne yaratır | Örnek |
+|---|---|---|
+| Global | Dosyanın en üst seviyesi | `const API = "/v1"` |
+| Fonksiyon | Her `function` çağrısı | `function f() { let x }` |
+| Blok | `{ }` içi — sadece `let` / `const` | `if (a) { let y }` |
+
+```js title="scope.js"
+var araba = "eski";
+
+function garaj() {
+  var araba = "yeni"; // dıştakini gölgeler, ezmez
+  console.log(araba); // "yeni"
+}
+
+garaj();
+console.log(araba); // "eski"
+```
+
+<Callout type="warning">
+  `var` blok scope tanımaz. Bir `if` bloğu içinde tanımlanan `var`, bloğun
+  dışından da görülür. Bu yüzden modern kodda `var` kullanmak için gerçek bir
+  sebep yoktur.
+</Callout>
+
+## Closure: fonksiyonun hafızası
+
+Bir fonksiyon, kendi gövdesinde olmayan bir değişkeni kullanıyorsa, o değişkeni
+**tanımlandığı yerdeki** scope'tan okur. Fonksiyon başka bir yere taşınsa bile
+bu bağ kopmaz.
+
+<ExampleCard title="Sayaç üreteci" level="orta" summary="Dışarıdan erişilemeyen, yalnızca döndürülen fonksiyonla değiştirilebilen bir sayaç.">
+
+```js title="counter.js"
+function sayacUret() {
+  let adet = 0; // dışarıdan görünmez
+
+  return function artir() {
+    adet += 1;
+    return adet;
+  };
+}
+
+const say = sayacUret();
+say(); // 1
+say(); // 2
+```
+
+`adet`, `sayacUret` bittiği hâlde silinmez — `artir` ona hâlâ bakıyor.
+
+</ExampleCard>
+
+<Callout type="frontend">
+  React'teki "stale closure" hatası tam olarak budur. `useEffect` içinde
+  bağımlılık dizisine koymadığın bir state'i okursan, effect ilk render'daki
+  değeri hatırlamaya devam eder — çünkü o closure eskimiştir.
+</Callout>
+
+## Hoisting ve Temporal Dead Zone
+
+`let` ve `const` de hoist edilir; fark, tanım satırına gelene kadar erişimin
+**hata fırlatmasıdır**. Bu aralığa Temporal Dead Zone (TDZ) denir.
+
+```js title="tdz.js"
+console.log(a); // undefined  → var hoist edilir, initialize edilir
+console.log(b); // ReferenceError → let hoist edilir, initialize edilmez
+
+var a = 1;
+let b = 2;
+```
+
+<Callout type="interview">
+  "let hoist edilmez" cevabı yanlıştır ve mülakatta yakalanır. Doğru cevap:
+  edilir, ama TDZ nedeniyle tanımdan önce erişilemez. Bu farkı söylemek,
+  konuyu ezberden değil motordan bildiğini gösterir.
+</Callout>
+
+<Callout type="expert">
+  Closure, tüm dış scope'u değil, motorun gerçekten ihtiyaç duyduğu bağlamı
+  tutar. V8, kullanılmayan değişkenleri context nesnesinden eler. Yine de bir
+  DOM elemanına kapanan uzun ömürlü closure bellek sızıntısı yaratabilir — bu
+  yüzden event listener'ları temizlemek closure'ın performans yüzüdür.
+</Callout>
+
+<CheatSheet
+  title="Özet"
+  rows={[
+    { term: "var", meaning: "Fonksiyon scope. Hoist edilir ve undefined ile başlar." },
+    { term: "let / const", meaning: "Blok scope. Hoist edilir ama TDZ nedeniyle erişilemez." },
+    { term: "closure", meaning: "Fonksiyonun, tanımlandığı scope'a olan kalıcı bağı." },
+    { term: "stale closure", meaning: "Eski render'ın değerini hatırlayan effect/callback." },
+    { term: "shadowing", meaning: "İçteki aynı isimli değişkenin dıştakini gölgelemesi." },
+  ]}
+/>

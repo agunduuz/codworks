@@ -1,0 +1,495 @@
+---
+title: "Promise'ler"
+description: "Promise bir 'gelecekteki değer' değil, tek yönlü bir durum makinesidir: executor, zincirleme, görünmez try/catch, promisify ve modern eklentiler."
+category: javascript
+level: baslangic-uzman
+tags: ["promise", "then", "catch", "finally", "chaining", "promisify", "unhandledrejection"]
+order: 5
+duration: 30
+updated: "2026-09-01"
+---
+
+Promise genelde "gelecekte gelecek bir değer" diye tanıtılır. Bu tanım işe yarar
+ama yanıltıcıdır, çünkü asıl önemli olan **değer değil davranıştır**: Promise,
+tek yönlü ve geri döndürülemez bir **durum makinesidir**. Bir kez yerleştiğinde
+(settled) bir daha değişmez; kaç kere ve ne zaman handler bağladığın önemsizdir.
+
+Bu makale temeli kuruyor: durum makinesi, zincirleme, hata yayılımı ve
+callback'li API'leri promise'e çevirme. `Promise.all` ailesi ve `async`/`await`
+[bir sonraki makalenin](/docs/javascript/promise-api-async-await) konusu.
+
+<Callout type="child">
+  Restoranda sipariş verdin, sana bir sıra numarası verdiler. O numara yemek
+  değil — **yemeğin sözü**. Üç şeyden biri olacak: hâlâ bekliyorsun, yemek geldi,
+  ya da mutfak "malzeme bitti" dedi. Numara bir kez sonuçlandı mı geri dönüşü
+  yok; "aslında gelsin" diyemezsin. Ve numarayı arkadaşına verirsen o da aynı
+  yemeği alır — söz çoğaltılabilir, sonuç tektir.
+</Callout>
+
+## Durum makinesi
+
+```js title="promise-basics.js"
+const soz = new Promise((resolve, reject) => {
+  // "üretici kod" — HEMEN, senkron olarak çalışır
+  setTimeout(() => resolve("bitti"), 1000);
+});
+```
+
+Executor fonksiyonu `new Promise` çağrısında **anında** çalışır. Asenkron olan
+executor değil, `resolve`'un ne zaman çağrıldığıdır.
+
+<Pipeline
+  title="Bir promise'in ömrü"
+  steps={[
+    {
+      label: "EXECUTOR",
+      detail: "new Promise ile senkron çalışır. Asenkronluk buradan gelmez.",
+    },
+    {
+      label: "PENDING",
+      detail: "state: pending, result: undefined. Tek değişebilir durum.",
+      tone: "var(--color-tone-frontend)",
+    },
+    {
+      label: "SETTLED",
+      detail: "resolve → fulfilled, reject → rejected. Geri dönüşü yok.",
+      tone: "var(--color-tone-interview)",
+    },
+    {
+      label: "HANDLER",
+      detail: "then/catch/finally callback'i bir MICROTASK olarak kuyruklanır.",
+      tone: "var(--color-tone-child)",
+    },
+  ]}
+/>
+
+Üç kural, hepsi sınav sorusu:
+
+1. **Tek sonuç.** `resolve` veya `reject`'ten sadece ilki geçerlidir; sonraki
+   çağrılar sessizce yok sayılır.
+2. **`state` ve `result` erişilemez.** Konsolda görürsün ama koddan okuyamazsın;
+   promise'e ancak `then` / `catch` / `finally` ile *abone olursun*.
+3. **Geç abone olmak sorun değil.** Yerleşmiş bir promise'e sonradan handler
+   bağlarsan handler yine çalışır — ama **senkron değil**, bir microtask olarak.
+
+```js title="single-result.js"
+new Promise((resolve, reject) => {
+  resolve("birinci");
+  resolve("ikinci");         // yok sayılır
+  reject(new Error("hata")); // yok sayılır
+}).then(console.log); // "birinci"
+```
+
+<Callout type="expert">
+  Handler'ın microtask olarak kuyruklanması, "promise hazırsa hemen çalışır"
+  sezgisini bozar:
+
+  ```js
+  const hazir = Promise.resolve(1);
+  hazir.then(() => console.log("A"));
+  console.log("B");
+  // B, sonra A
+  ```
+
+  Bu davranışın adı spesifikasyonda **PromiseJobs**'tur ve neden böyle
+  olduğunu, microtask kuyruğunun tarayıcı turunun neresinde boşaldığını
+  [Event Loop](/docs/javascript/event-loop) makalesinde ayrıntılı işledik.
+  Sebebi tutarlılıktır: bir API'nin bazen senkron bazen asenkron dönmesi
+  ("releasing Zalgo") tahmin edilemez kod üretir.
+</Callout>
+
+## `then`, `catch`, `finally`
+
+```js title="consumers.js"
+soz.then(
+  (sonuc) => console.log(sonuc), // fulfilled
+  (hata) => console.error(hata), // rejected
+);
+
+soz.catch((hata) => console.error(hata));   // .then(null, f) ile aynı
+soz.finally(() => console.log("bitti"));    // her durumda
+```
+
+`finally`'nin üç özelliği var ve üçü de gözden kaçar:
+
+- **Argüman almaz.** Sonucu veya hatayı görmez — zaten işi "temizlik yapmak",
+  sonucu incelemek değil.
+- **Sonucu olduğu gibi geçirir.** `finally` içinde `return` yazsan bile zincir
+  bir önceki değerle devam eder.
+- **İçinde hata fırlatırsa** o hata zincire girer ve önceki sonucun yerine geçer.
+
+<Callout type="interview">
+  Klasik ayrım sorusu: `.then(f, g)` ile `.then(f).catch(g)` arasındaki fark
+  nedir?
+
+  ```js
+  // g, SADECE önceki promise'in hatasını yakalar. f patlarsa g çalışmaz.
+  soz.then(f, g);
+
+  // g, hem önceki promise'in hem de f'in hatasını yakalar.
+  soz.then(f).catch(g);
+  ```
+
+  `.then(f, g)` biçiminde `g`, `f` ile **aynı seviyededir**; `f`'in fırlattığı
+  hata `g`'ye ulaşmaz. Neredeyse her zaman ikinci biçim istenir.
+</Callout>
+
+## Zincirleme
+
+Zincirlemenin tek sebebi şu: **her `.then` çağrısı yeni bir promise döndürür.**
+
+```js title="chaining.js"
+Promise.resolve(1)
+  .then((x) => x + 1)   // 2 ile dolan yeni promise
+  .then((x) => x * 10)  // 20 ile dolan yeni promise
+  .then(console.log);   // 20
+```
+
+Handler bir promise **döndürürse**, zincir o promise yerleşene kadar bekler.
+Sıralı asenkron işleri bu sayede yazarız.
+
+<ExampleCard
+  title="En sık yapılan iki zincirleme hatası"
+  level="orta"
+  summary="Biri return unutmak, diğeri zincir kurduğunu sanıp aslında aynı promise'e çoklu abone olmak."
+>
+
+```js title="chaining-mistakes.js"
+// ✗ 1: return yok → zincir beklemez, sonuç undefined
+fetch(url)
+  .then((r) => {
+    r.json(); // return unutuldu
+  })
+  .then((veri) => console.log(veri)); // undefined
+
+// ✓ 1
+fetch(url)
+  .then((r) => r.json())
+  .then((veri) => console.log(veri));
+
+// ✗ 2: Bu bir zincir DEĞİL — üçü de aynı promise'e abone
+const p = Promise.resolve(1);
+p.then((x) => x + 1);
+p.then((x) => x + 1);
+p.then(console.log); // 1 — dönüşümler birikmedi
+
+// ✓ 2: Zincir, her adımın öncekinin DÖNÜŞÜNE bağlanmasıdır
+Promise.resolve(1)
+  .then((x) => x + 1)
+  .then((x) => x + 1)
+  .then(console.log); // 3
+```
+
+</ExampleCard>
+
+<Callout type="frontend">
+  `fetch` zincirlerinde ikinci bir tuzak var: **`fetch`, HTTP hata kodlarında
+  reddetmez.** 404 veya 500 dönen bir istek başarıyla *fulfilled* olur; sadece
+  ağ tamamen koparsa reddeder.
+
+  ```js
+  const yanit = await fetch(url);
+  if (!yanit.ok) {
+    throw new Error(`HTTP ${yanit.status}`); // bunu sen yazmalısın
+  }
+  const veri = await yanit.json();
+  ```
+
+  `.catch` bloğunun olması bu yüzden 500 hatalarını yakaladığın anlamına gelmez.
+</Callout>
+
+### Thenable
+
+Zincire giren şeyin `Promise` olması şart değil. `then` adında bir metodu olan
+**herhangi bir nesne** (thenable) promise gibi benimsenir:
+
+```js title="thenable.js"
+class GecikmeliSayi {
+  constructor(sayi) {
+    this.sayi = sayi;
+  }
+  then(resolve) {
+    setTimeout(() => resolve(this.sayi * 2), 500);
+  }
+}
+
+Promise.resolve()
+  .then(() => new GecikmeliSayi(21))
+  .then(console.log); // 500 ms sonra 42
+```
+
+Bu, farklı kütüphanelerin promise uyumlu nesnelerinin birbirine geçebilmesini
+sağlar. Yan etkisi de vardır: `then` adında sıradan bir metodu olan bir nesneyi
+`resolve` edersen motor onu promise sanır ve çağırır.
+
+## Hata yönetimi
+
+Executor ve tüm handler'lar **görünmez bir `try..catch`** içindedir. Senkron
+fırlatılan bir hata otomatik olarak reddetmeye (rejection) dönüşür:
+
+```js title="implicit-try-catch.js"
+new Promise(() => {
+  throw new Error("patladı");
+}).catch(console.error); // yakalanır
+
+// Bununla tamamen eşdeğer:
+new Promise((resolve, reject) => {
+  reject(new Error("patladı"));
+}).catch(console.error);
+```
+
+Hata, zincirde **en yakın** hata handler'ına atlar. Aradaki `.then`'ler atlanır:
+
+```js title="error-propagation.js"
+Promise.resolve()
+  .then(() => { throw new Error("adım 1"); })
+  .then(() => console.log("bu çalışmaz"))
+  .then(() => console.log("bu da çalışmaz"))
+  .catch((e) => console.log("yakalandı:", e.message)); // "yakalandı: adım 1"
+```
+
+### `catch` zincirin sonu değildir
+
+`catch` hatayı yuttuğunda zincir **normale döner** ve sonraki `.then`'ler çalışır.
+Hatayı devretmek istiyorsan yeniden fırlatman gerekir:
+
+```js title="rethrow.js"
+Promise.reject(new Error("ağ"))
+  .catch((e) => {
+    if (e.message === "ağ") return "yedek veri"; // hata iyileşti
+    throw e;                                     // iyileşemedi, devret
+  })
+  .then(console.log); // "yedek veri"
+```
+
+<Callout type="warning">
+  **Yakalanmayan reddetmeler sessiz değildir.**
+
+  Tarayıcıda `unhandledrejection` olayı tetiklenir:
+
+  ```js
+  window.addEventListener("unhandledrejection", (olay) => {
+    console.error(olay.reason); // hata nesnesi
+    olay.preventDefault();      // varsayılan konsol uyarısını bastırır
+  });
+  ```
+
+  **Node.js 15'ten itibaren yakalanmayan bir reddetme süreci çökertir.** Daha
+  eski sürümlerdeki "sadece uyarı yazar" davranışı geride kaldı; bugün üretimde
+  eksik bir `.catch` doğrudan bir kesinti demektir.
+
+  Bir uyarı daha: bir reddetmenin "yakalanmamış" sayılması **microtask
+  kontrolünün sonunda** karara bağlanır. Handler'ı daha sonraki bir task'ta
+  (`setTimeout` içinde) bağlarsan iş işten geçmiş olur.
+</Callout>
+
+## Promisify: callback'li API'yi promise'e çevirmek
+
+Eski API'ler "error-first callback" düzenini kullanır: `callback(err, sonuc)`.
+Bunları tek tek sarmak yerine genel bir yardımcı yazılır.
+
+<ExampleCard
+  title="promisify yardımcısı"
+  level="uzman"
+  summary="Error-first callback alan herhangi bir fonksiyonu promise döndüren bir fonksiyona çevirir."
+>
+
+```js title="promisify.js"
+function promisify(f, cokluSonuc = false) {
+  return function (...args) {
+    return new Promise((resolve, reject) => {
+      function callback(hata, ...sonuclar) {
+        if (hata) {
+          reject(hata);
+        } else {
+          resolve(cokluSonuc ? sonuclar : sonuclar[0]);
+        }
+      }
+
+      args.push(callback);
+      // this'i koru: nesne metodu olarak da çağrılabilsin
+      f.call(this, ...args);
+    });
+  };
+}
+
+// Kullanım
+const scriptYukle = promisify(loadScript);
+scriptYukle("/lib.js").then(/* ... */);
+```
+
+</ExampleCard>
+
+<Callout type="warning">
+  Promisify'ın **temel sınırı**: bir promise yalnızca bir kez yerleşebilir, ama
+  bir callback teknik olarak defalarca çağrılabilir. Bu yüzden promisify sadece
+  callback'i **tam olarak bir kez** çağıran fonksiyonlar için doğru çalışır.
+
+  Olay yayan (stream, socket, `on("data")`) API'ler promise'e çevrilemez —
+  onların karşılığı async iterator'dır.
+</Callout>
+
+Pratikte kendi promisify'ını yazmana çoğu zaman gerek yok:
+
+- Node'da `node:util` içindeki `promisify`, ve daha iyisi doğrudan promise
+  sürümleri: `node:fs/promises`, `node:timers/promises`.
+- Tarayıcıda modern API'ler zaten promise döndürüyor: `fetch`, `IndexedDB`
+  sarmalayıcıları, `navigator.*`.
+
+## Modern eklentiler
+
+### `Promise.withResolvers()`
+
+`resolve` ve `reject`'i executor'ın dışına taşımak için yıllarca elle yazılan
+"deferred" kalıbının dildeki karşılığı (Baseline 2024):
+
+```js title="with-resolvers.js"
+// Eskiden
+let resolve, reject;
+const soz = new Promise((res, rej) => {
+  resolve = res;
+  reject = rej;
+});
+
+// Şimdi
+const { promise, resolve, reject } = Promise.withResolvers();
+```
+
+Asıl faydası, sözü **yaratan** ile **sonuçlandıran** kodun farklı yerlerde
+olduğu durumlardır: olay tabanlı bir API'yi sarmak, bir kuyruk yönetmek, bir
+kullanıcı onayını beklemek.
+
+```js title="dialog.js"
+let bekleyen = null;
+
+export function onayIste() {
+  bekleyen = Promise.withResolvers();
+  dialogAc();
+  return bekleyen.promise;
+}
+
+// Çok sonra, başka bir dosyada:
+export function onayla() { bekleyen.resolve(true); }
+export function vazgec() { bekleyen.resolve(false); }
+```
+
+### `Promise.try()`
+
+Senkron mu asenkron mu olduğunu bilmediğin bir fonksiyonu tek tip ele almak için
+(Baseline 2025). `Promise.resolve().then(fn)` ile arasındaki fark, `fn`'in
+**senkron** çağrılmasıdır — gereksiz bir microtask turu harcanmaz:
+
+```js title="promise-try.js"
+function calistir(islem) {
+  return Promise.try(islem)      // senkron fırlatsa bile reddetmeye dönüşür
+    .then((s) => console.log(s))
+    .catch((e) => console.error(e));
+}
+
+calistir(() => "senkron sonuç");
+calistir(() => { throw new Error("senkron hata"); });
+calistir(async () => "asenkron sonuç");
+```
+
+## Mülakat soruları
+
+### Soru 1 — executor ne zaman çalışır?
+
+```js title="q1.js"
+console.log("A");
+
+const p = new Promise((resolve) => {
+  console.log("B");
+  resolve();
+});
+
+p.then(() => console.log("C"));
+
+console.log("D");
+```
+
+**Cevap:** `A B D C`. Executor senkron çalışır (`B`), handler ise bir microtask
+olarak kuyruklanır (`C`).
+
+### Soru 2 — `finally` neyi geçirir?
+
+```js title="q2.js"
+Promise.resolve("değer")
+  .finally(() => "başka bir şey")
+  .then(console.log); // ?
+```
+
+**Cevap:** `"değer"`. `finally`'nin dönüş değeri yok sayılır; sonuç olduğu gibi
+geçer. (Ama `finally` içinde `throw` edersen o hata zincire girer.)
+
+### Soru 3 — hangisi yakalar?
+
+```js title="q3.js"
+Promise.resolve()
+  .then(
+    () => { throw new Error("boom"); },
+    (e) => console.log("A:", e.message),
+  )
+  .catch((e) => console.log("B:", e.message));
+```
+
+**Cevap:** `B: boom`. İkinci argüman olarak verilen hata handler'ı, **kendisiyle
+aynı `.then` içindeki** başarı handler'ının hatasını görmez.
+
+### Soru 4 — zincir hatadan sonra devam eder mi?
+
+```js title="q4.js"
+Promise.reject(new Error("x"))
+  .catch(() => "kurtarıldı")
+  .then((v) => console.log(v))
+  .catch(() => console.log("buraya gelinmez"));
+```
+
+**Cevap:** `"kurtarıldı"` yazılır. `catch` hatayı yuttuğu için zincir normal
+akışına döner.
+
+### Soru 5 — bu neden `undefined` yazıyor?
+
+```js title="q5.js"
+function veriGetir() {
+  fetch("/api").then((r) => r.json());
+}
+
+console.log(await veriGetir()); // undefined
+```
+
+**Cevap:** `veriGetir` hiçbir şey döndürmüyor. Asenkron bir iş yapan her fonksiyon
+**promise döndürmelidir**; aksi hâlde çağıran taraf ne bekleyebilir ne de hatayı
+yakalayabilir. Doğrusu `return fetch(...)`.
+
+<CheatSheet
+  title="Özet"
+  rows={[
+    { term: "executor", meaning: "new Promise ile SENKRON çalışır. Asenkronluk resolve'un zamanlamasından gelir." },
+    { term: "durumlar", meaning: "pending → fulfilled | rejected. Tek yönlü, geri dönüşü yok." },
+    { term: "tek sonuç", meaning: "İlk resolve/reject geçerli; sonrakiler sessizce yok sayılır." },
+    { term: "handler zamanı", meaning: "Her zaman microtask. Hazır promise'te bile senkron değil." },
+    { term: ".then(f, g)", meaning: "g, f'in hatasını YAKALAMAZ. Genelde .then(f).catch(g) istenir." },
+    { term: ".finally(f)", meaning: "Argüman almaz, dönüşü yok sayılır, sonucu geçirir; throw ederse zincire girer." },
+    { term: "zincir", meaning: "Her .then yeni promise döner. Handler promise döndürürse zincir bekler." },
+    { term: "en sık hata", meaning: "return unutmak; ve aynı promise'e çoklu .then ekleyip zincir sanmak." },
+    { term: "thenable", meaning: "then metodu olan her nesne zincire benimsenir." },
+    { term: "görünmez try/catch", meaning: "Executor ve handler'lardaki senkron throw, reddetmeye dönüşür." },
+    { term: "catch sonrası", meaning: "Hata yutulursa zincir normale döner; devretmek için yeniden throw et." },
+    { term: "fetch", meaning: "404/500'de REDDETMEZ. response.ok kontrolünü sen yazarsın." },
+    { term: "unhandledrejection", meaning: "Tarayıcıda olay; Node 15+ süreci çökertir." },
+    { term: "promisify", meaning: "Error-first callback → promise. Sadece bir kez çağrılan callback'ler için." },
+    { term: "withResolvers()", meaning: "resolve/reject'i dışarı taşır — deferred kalıbının dildeki hâli." },
+    { term: "Promise.try(fn)", meaning: "fn'i SENKRON çağırır; senkron throw'u da reddetmeye çevirir." },
+  ]}
+/>
+
+## Kaynaklar
+
+- [javascript.info — Promise](https://javascript.info/promise-basics)
+- [javascript.info — Promises chaining](https://javascript.info/promise-chaining)
+- [javascript.info — Error handling with promises](https://javascript.info/promise-error-handling)
+- [javascript.info — Promisification](https://javascript.info/promisify)
+- [MDN — `Promise.withResolvers()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/withResolvers)
+- [MDN — `Promise.try()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/try)
+- [Jake Archibald — The gotcha of unhandled promise rejections](https://jakearchibald.com/2023/unhandled-rejections/)

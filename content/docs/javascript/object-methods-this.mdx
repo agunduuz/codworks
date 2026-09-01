@@ -1,0 +1,815 @@
+---
+title: "Object Methods & this"
+description: "Object literal'de metot tanımlama, iki sözdiziminin gizli farkı ve this'in 4+1 bağlanma kuralı — motor seviyesine kadar."
+category: javascript
+level: baslangic-uzman
+tags:
+  [
+    "this",
+    "object",
+    "method",
+    "call",
+    "apply",
+    "bind",
+    "arrow function",
+    "HomeObject",
+  ]
+order: 2
+duration: 28
+updated: "2026-08-29"
+---
+
+JavaScript'te en çok yanlış cevaplanan soru `this`'in ne olduğu değil, **ne zaman
+belirlendiğidir**. Çoğu dilde `this` fonksiyonun yazıldığı yere bakar. JavaScript'te
+ise fonksiyonun **nasıl çağrıldığına** bakar — ve bu tek fark, "neden `undefined`
+geliyor" diye başlayan hataların büyük kısmını üretir.
+
+Bu makale iki konuyu birlikte ele alıyor, çünkü ayrı öğrenildiğinde ikisi de
+eksik kalıyor: nesneye davranış eklemek — yani metotlar — ve o davranışın hangi
+nesne üzerinde çalıştığını bilmek, yani `this`.
+
+<Callout type="child">
+  Bir uzaktan kumanda düşün. Üzerinde "sesi aç" düğmesi var. Düğme her zaman
+  aynı şeyi yapar ama **hangi televizyonun** sesini açacağı, kumandayı o an
+  hangi televizyona doğrulttuğuna bağlıdır. `this`, kumandanın o an
+  doğrultulduğu televizyondur. Düğmenin üstünde yazmaz — çünkü her seferinde
+  değişebilir.
+</Callout>
+
+## Metot nedir?
+
+Bir nesnenin property'si olan fonksiyona **metot (method)** denir. Teknik olarak
+özel bir şey değildir: değeri fonksiyon olan sıradan bir property'dir.
+
+```js title="method-basics.js"
+let kullanici = {
+  ad: "Anıl",
+  yas: 31,
+};
+
+// 1) Önce fonksiyonu tanımla, sonra ata
+function selamla() {
+  console.log("Merhaba!");
+}
+kullanici.selamla = selamla;
+
+// 2) Ya da doğrudan object literal içinde tanımla
+let kullanici2 = {
+  ad: "Anıl",
+  selamla: function () {
+    console.log("Merhaba!");
+  },
+};
+
+kullanici.selamla(); // "Merhaba!"
+```
+
+Nesne, veriyi (`ad`, `yas`) ve o veriyle ne yapılabileceğini (`selamla`) bir arada
+tutar. Nesne yönelimli programlamanın çekirdek fikri budur.
+
+## Method shorthand — ve iki sözdiziminin gizli farkı
+
+ES2015'ten beri kısa bir yazım var:
+
+```js title="shorthand.js"
+// Uzun hâli
+let kullanici = {
+  selamla: function () {
+    console.log("Merhaba!");
+  },
+};
+
+// Kısa hâli — "method shorthand"
+let kullanici2 = {
+  selamla() {
+    console.log("Merhaba!");
+  },
+};
+```
+
+Çoğu kaynak burada "ikisi aynı, kısası daha güzel" deyip geçer. **Aynı değiller.**
+Motor, `selamla(){}` biçimini gördüğünde fonksiyona `[[HomeObject]]` adında
+gizli bir iç slot ekler ve onu _constructible_ olmayan bir fonksiyon olarak yaratır.
+
+<ExampleCard
+  title="Aynı görünen iki tanımın üç farkı"
+  level="uzman"
+  summary="Method shorthand ile function property, sadece yazım kısaltması değil; farklı iki fonksiyon nesnesi üretir."
+>
+
+```js title="shorthand-vs-property.js"
+const nesne = {
+  __proto__: { etiket: "üst nesne" },
+
+  kisa() {
+    // [[HomeObject]] var → super çalışır
+    return super.etiket;
+  },
+
+  uzun: function () {
+    // return super.etiket;
+    // ^ SyntaxError: 'super' keyword unexpected here
+    return "super yok";
+  },
+};
+
+console.log(nesne.kisa()); // "üst nesne"
+
+// Constructible mi?
+new nesne.uzun(); // OK — sıradan fonksiyon, prototype property'si var
+new nesne.kisa(); // TypeError: nesne.kisa is not a constructor
+
+console.log(nesne.uzun.prototype); // {} — var
+console.log(nesne.kisa.prototype); // undefined — yok
+```
+
+</ExampleCard>
+
+|                           | `kisa() {}` (shorthand) | `uzun: function () {}`        |
+| ------------------------- | ----------------------- | ----------------------------- |
+| `[[HomeObject]]` slotu    | var                     | yok                           |
+| `super` erişimi           | çalışır                 | `SyntaxError`                 |
+| `new` ile çağrılabilir mi | hayır (`TypeError`)     | evet                          |
+| `prototype` property'si   | yok                     | var                           |
+| Generator yazımı          | `*uret() {}`            | `uret: function* () {}`       |
+| Async yazımı              | `async getir() {}`      | `getir: async function () {}` |
+
+<Callout type="expert">
+  `super`, "üst sınıfa git" demek değildir; **`[[HomeObject]]`'in prototipine
+  git** demektir. Bu yüzden metodu başka bir nesneye kopyalasan bile `super`
+  hâlâ *tanımlandığı* nesnenin prototipine bakar. `super` sözcüğünün `this` gibi
+  dinamik değil, statik-ish davranmasının sebebi budur — ve tam da bu yüzden
+  `[[HomeObject]]` olmayan bir fonksiyonda `super` yazmak sözdizimi hatasıdır,
+  çalışma zamanı hatası değil.
+</Callout>
+
+Pratik sonuç: **object literal içinde metot yazarken her zaman shorthand kullan.**
+Uzun biçimi sadece o fonksiyonu ayrıca `new` ile çağırma gibi çok özel bir
+ihtiyacın varsa tercih et — ki bu ihtiyaç modern kodda neredeyse hiç doğmaz.
+
+## `this` — noktadan önceki nesne
+
+Metot, üzerinde durduğu nesnenin verisine erişmek zorunda. Bunun yolu `this`.
+
+```js title="this-basics.js"
+let kullanici = {
+  ad: "Anıl",
+  selamla() {
+    console.log(`Merhaba, ${this.ad}!`);
+  },
+};
+
+kullanici.selamla(); // "Merhaba, Anıl!"
+```
+
+Kural, ilk hâliyle çok basit: **`this`, noktadan önceki nesnedir.**
+
+Peki neden `this.ad` yerine doğrudan `kullanici.ad` yazmıyoruz? Çünkü dış
+değişkene yaslanmak kırılgandır:
+
+```js title="why-not-outer-variable.js"
+let kullanici = {
+  ad: "Anıl",
+  selamla() {
+    console.log(`Merhaba, ${kullanici.ad}!`); // dış değişkene yaslanıyor
+  },
+};
+
+let kopya = kullanici;
+kullanici = null; // referans değişti
+
+kopya.selamla(); // TypeError: Cannot read properties of null
+```
+
+`this.ad` yazsaydık sorun olmazdı: `this`, çağrı anında `kopya`ya bağlanırdı.
+
+<Callout type="child">
+  `this` yazmak, "bu mektubu **kime** getirdiysen ona ver" demektir.
+  `kullanici.ad` yazmak ise adresi mektubun içine kalıcı olarak yazmaktır —
+  taşınırsa mektup boşa gider.
+</Callout>
+
+## `this` bağlı değildir
+
+İşte diğer dillerden gelenleri en çok şaşırtan kısım: JavaScript'te `this`
+**herhangi bir fonksiyonda** kullanılabilir ve değeri çalışma anında hesaplanır.
+Fonksiyon nerede tanımlandığının hiçbir önemi yoktur.
+
+```js title="this-is-not-bound.js"
+let kullanici = { ad: "Anıl" };
+let yonetici = { ad: "Zeynep" };
+
+function selamla() {
+  console.log(this.ad);
+}
+
+// Aynı fonksiyon, iki nesne
+kullanici.selamla = selamla;
+yonetici.selamla = selamla;
+
+kullanici.selamla(); // "Anıl"  → this === kullanici
+yonetici.selamla(); // "Zeynep"  → this === yonetici
+```
+
+Tek bir fonksiyon nesnesi var; `this` her çağrıda yeniden belirleniyor.
+
+<Callout type="interview">
+  "JavaScript'te `this` neye bağlıdır?" sorusuna **"tanımlandığı nesneye"**
+  cevabı yanlıştır ve hemen fark edilir. Doğru cevap: *"Hiçbir şeye bağlı
+  değildir; çağrı anında, çağrının biçimine göre belirlenir."* Bu cümleyi
+  kurduktan sonra aşağıdaki dört kuralı sırasıyla sayabiliyorsan konuyu bildiğin
+  anlaşılır.
+</Callout>
+
+## 4+1 bağlanma kuralı
+
+`this`'in değeri şu sıraya göre belirlenir. Yukarıdaki kural kazanır.
+
+| #   | Kural                 | Çağrı biçimi                                  | `this`                                     |
+| --- | --------------------- | --------------------------------------------- | ------------------------------------------ |
+| 1   | `new` bağlaması       | `new Fn()`                                    | Yeni oluşturulan nesne                     |
+| 2   | Açık bağlama          | `fn.call(o)` · `fn.apply(o)` · `fn.bind(o)()` | `o`                                        |
+| 3   | Örtük bağlama         | `nesne.fn()`                                  | `nesne` (noktadan önceki)                  |
+| 4   | Varsayılan            | `fn()`                                        | strict: `undefined` · sloppy: `globalThis` |
+| +1  | Sözdizimsel (lexical) | Arrow fonksiyon                               | Tanımlandığı yerdeki `this` — kural dışı   |
+
+Öncelik gerçekten çalışıyor mu, kanıtı:
+
+```js title="precedence.js"
+function kim() {
+  return this.etiket;
+}
+
+const bagli = kim.bind({ etiket: "bind" });
+
+console.log(bagli()); // "bind"
+console.log(bagli.call({ etiket: "call" })); // "bind"  ← bind, call'ı yener
+```
+
+`new`, `bind`'ı da yener:
+
+```js title="new-beats-bind.js"
+function Nokta(x, y) {
+  this.x = x;
+  this.y = y;
+}
+
+const YEkseni = Nokta.bind(null, 0); // x'i 0'a sabitle
+const p = new YEkseni(5);
+
+console.log(p); // Nokta { x: 0, y: 5 }
+// bind'ın thisArg'ı (null) yok sayıldı, ön argüman (0) korundu.
+```
+
+<Callout type="expert">
+  `new` ile çağrılan bir bound function'da `new.target`, bound function değil
+  **hedef fonksiyondur**. Bu yüzden `new YEkseni(5)` bir `Nokta` örneği üretir,
+  `YEkseni` örneği değil. Aynı sebeple `p instanceof Nokta` `true` döner.
+</Callout>
+
+### +1: arrow fonksiyonların `this`'i yok
+
+Arrow fonksiyonlar bir kural değil, **kuralın dışıdır**: kendi `this`'leri yoktur.
+`this` yazdığında, tıpkı sıradan bir değişken gibi dış kapsamdan okunur.
+
+```js title="arrow-lexical-this.js"
+let kullanici = {
+  ad: "Anıl",
+  arkadaslar: ["Zeynep", "Deniz"],
+
+  hepsiniSelamla() {
+    // Arrow, hepsiniSelamla'nın this'ini miras alır
+    this.arkadaslar.forEach((arkadas) => {
+      console.log(`${this.ad} → ${arkadas}`);
+    });
+  },
+};
+
+kullanici.hepsiniSelamla();
+// "Anıl → Zeynep"
+// "Anıl → Deniz"
+```
+
+Aynı kodu `function` ile yazsaydık, callback bağımsız çağrıldığı için `this`
+`undefined` olurdu ve `this.ad` patlardı.
+
+<Callout type="warning">
+  Arrow fonksiyonu **object literal metodu olarak kullanma.** Object literal bir
+  kapsam (scope) oluşturmaz; arrow o yüzden nesneyi değil, nesnenin *tanımlandığı*
+  kapsamın `this`'ini alır — modül üst seviyesinde bu `undefined`'dır.
+
+```js
+let kullanici = {
+  ad: "Anıl",
+  selamla: () => console.log(this.ad), // ✗ this, kullanici DEĞİL
+};
+
+kullanici.selamla(); // undefined (veya TypeError)
+```
+
+</Callout>
+
+Arrow'un `this`'i `call`, `apply`, `bind` ile de **değiştirilemez** — bu üçü
+sessizce yok sayılır. Arrow ayrıca `new` ile çağrılamaz.
+
+## Strict mode farkı: `this` substitution
+
+Kural 4'ün iki farklı sonucu olmasının sebebi eski, geriye dönük uyumlu bir
+davranış: **this substitution** (spesifikasyonda `ToObject` dönüşümü).
+
+```js title="this-substitution.js"
+function sloppy() {
+  return this;
+}
+
+function strict() {
+  "use strict";
+  return this;
+}
+
+console.log(sloppy() === globalThis); // true  — undefined → globalThis
+console.log(strict()); // undefined
+
+// Primitive alıcılar da sarmalanır (sadece sloppy mode'da)
+function tip() {
+  return Object.prototype.toString.call(this);
+}
+tip.call(7); // "[object Number]"  — 7, Number nesnesine sarmalandı
+tip.call("abc"); // "[object String]"
+```
+
+<Callout type="warning">
+  Modern kodda bu farkı görmen çoğu zaman **imkânsızdır**, çünkü:
+
+- ES modülleri (`import` / `export` içeren her dosya) daima strict mode'dur.
+- `class` gövdesi daima strict mode'dur.
+- Next.js, Vite, webpack gibi araçların ürettiği kod modül olarak çalışır.
+
+Yani bugün `this`'in kaybolduğu yerde `globalThis` değil, **`undefined`**
+bulursun. `Cannot read properties of undefined (reading 'ad')` hatasının
+arkasındaki hikâye budur.
+
+</Callout>
+
+Bir ek: ES modülünün en üst seviyesinde `this` her zaman `undefined`'dır — klasik
+script'te ise `globalThis`. Aynı dosya, `<script>` ve `<script type="module">`
+olarak farklı davranır.
+
+## En sık hata: `this`'i kaybetmek
+
+Metot, nesnesinden koparıldığı anda `this` bağını kaybeder. Kopma çok kolay olur:
+
+```js title="losing-this.js"
+let kullanici = {
+  ad: "Anıl",
+  selamla() {
+    console.log(`Merhaba, ${this.ad}!`);
+  },
+};
+
+// 1) Callback olarak geçirmek
+setTimeout(kullanici.selamla, 100); // "Merhaba, undefined!"
+
+// 2) Değişkene almak
+const f = kullanici.selamla;
+f(); // TypeError: Cannot read properties of undefined
+
+// 3) Destructuring
+const { selamla } = kullanici;
+selamla(); // aynı hata
+
+// 4) Dizi metoduna geçirmek
+["a", "b"].forEach(kullanici.selamla); // this yine yok
+```
+
+Sebep hep aynı: `setTimeout(kullanici.selamla, 100)` ifadesinde `kullanici.selamla`
+önce **değerlendirilir** ve geriye çıplak fonksiyon nesnesi kalır. `setTimeout`
+onu `func()` biçiminde çağırır — yani kural 3 değil, kural 4 işler.
+
+<Callout type="child">
+  Kitabı rafından çekip masaya bıraktın. Kitap hâlâ aynı kitap ama artık hangi
+  raftan geldiğini kimse bilmiyor. `this` o raftır; kitabı çekince kaybolur.
+</Callout>
+
+### Çözüm 1: sarmalayıcı fonksiyon
+
+```js title="wrapper.js"
+setTimeout(() => kullanici.selamla(), 100); // "Merhaba, Anıl!"
+```
+
+Çağrı artık `kullanici.selamla()` biçiminde, yani nokta geri geldi. Basit ama bir
+kusuru var:
+
+```js title="wrapper-race.js"
+setTimeout(() => kullanici.selamla(), 1000);
+
+// 1 saniye dolmadan önce:
+kullanici = {
+  ad: "Başkası",
+  selamla() {
+    console.log("Başka biri!");
+  },
+};
+
+// 1 saniye sonra → "Başka biri!"
+```
+
+Sarmalayıcı, `kullanici` **değişkenini** çağrı anında okur. Değişken o arada
+değişirse yanlış nesneye gidersin.
+
+### Çözüm 2: `bind`
+
+```js title="bind-solution.js"
+const selamlaBagli = kullanici.selamla.bind(kullanici);
+
+selamlaBagli(); // "Merhaba, Anıl!"
+setTimeout(selamlaBagli, 1000); // değişken değişse bile "Merhaba, Anıl!"
+```
+
+`bind`, `this`'i **o anki nesneye** kalıcı olarak sabitleyen yeni bir fonksiyon
+üretir. Sonradan değişkenin değişmesi bu bağı bozmaz.
+
+<Callout type="frontend">
+  Bu problem React'in sınıf bileşeni döneminin en tanıdık ritüeliydi:
+
+```jsx
+class Sayac extends React.Component {
+  constructor(props) {
+    super(props);
+    this.handleClick = this.handleClick.bind(this); // zorunlu ritüel
+  }
+  handleClick() {
+    this.setState(/* ... */); // bind olmasaydı this === undefined
+  }
+}
+```
+
+`onClick={this.handleClick}` yazdığında JSX, metodu nesnesinden koparıp çıplak
+fonksiyon olarak geçirir — yukarıdaki 1. senaryonun aynısı.
+
+Hook'lar bu sorunu çözmedi, **ortadan kaldırdı**: fonksiyon bileşenlerinde
+`this` diye bir şey yok, state closure ile okunuyor. Yani `this` hatasının
+yerini `stale closure` hatası aldı — ikisi de aynı kökten, "değer ne zaman
+okunuyor" sorusundan geliyor. (Bkz. [Scope & Closure](/docs/javascript/scope-closure))
+
+</Callout>
+
+## `call`, `apply`, `bind`
+
+Üçü de `this`'i açıkça belirler; farkları **ne zaman çalıştıkları** ve
+**argümanları nasıl aldıklarıdır**.
+
+| Metot                 | Çalışır mı | Argümanlar           | Dönüş              |
+| --------------------- | ---------- | -------------------- | ------------------ |
+| `fn.call(o, a, b)`    | hemen      | tek tek              | fonksiyonun dönüşü |
+| `fn.apply(o, [a, b])` | hemen      | dizi / array-like    | fonksiyonun dönüşü |
+| `fn.bind(o, a)`       | hayır      | tek tek (ön argüman) | yeni fonksiyon     |
+
+```js title="call-apply-bind.js"
+function tanit(selam, noktalama) {
+  return `${selam}, ${this.ad}${noktalama}`;
+}
+
+const kisi = { ad: "Anıl" };
+
+tanit.call(kisi, "Merhaba", "!"); // "Merhaba, Anıl!"
+tanit.apply(kisi, ["Selam", "..."]); // "Selam, Anıl..."
+
+const merhaba = tanit.bind(kisi, "Merhaba");
+merhaba("!"); // "Merhaba, Anıl!"  ← kısmi uygulama (partial application)
+```
+
+<Callout type="expert">
+  `bind`'ın döndürdüğü şey sıradan bir fonksiyon değil, **bound function exotic
+  object**'tir. Gözlemlenebilir farkları:
+
+- `name` → hedefin adının başına `"bound "` eklenir: `"bound tanit"`.
+- `length` → hedefin `length`'i eksi sabitlenen argüman sayısı, en az 0.
+- `prototype` property'si **yoktur**. Bu yüzden `class X extends fn.bind(null)`
+  `TypeError` verir; ama `new` ile çağrılabilir ve `instanceof` hedefin
+  prototipine bakarak doğru çalışır.
+- **Yeniden bind edilemez:** `fn.bind(a).bind(b)` çağrısında `b` sessizce
+  yok sayılır; sadece argümanlar birikir.
+
+```js
+function log(...args) {
+  console.log(this, ...args);
+}
+const b1 = log.bind("ilk", 1);
+const b2 = b1.bind("ikinci", 2);
+b2(3); // "ilk" 1 2 3  ← "ikinci" yok sayıldı
+```
+
+</Callout>
+
+`bind`'ın iç mekanizması, kısmi uygulama, currying ve polyfill yazımı ayrı bir
+makalenin konusu: [Function Binding](/docs/javascript/function-binding).
+
+<Callout type="warning">
+  `bind` **her çağrıda yeni bir fonksiyon nesnesi** üretir. Referans eşitliğine
+  dayanan her yer bundan zarar görür:
+
+```js
+el.addEventListener("click", handler.bind(this));
+el.removeEventListener("click", handler.bind(this)); // ✗ kaldırmaz
+```
+
+React'te de aynısı: `onClick={this.handleClick.bind(this)}` her render'da yeni
+prop üretir ve `React.memo` / `PureComponent` optimizasyonunu boşa çıkarır.
+Doğrusu bir kez bağlayıp saklamaktır (constructor'da veya class field olarak).
+
+</Callout>
+
+## Getter ve setter'da `this`
+
+Getter/setter içindeki `this`, property'nin **üzerinden erişildiği** nesnedir —
+tanımlandığı nesne değil.
+
+```js title="getters.js"
+const olcum = {
+  a: 1,
+  b: 2,
+  c: 3,
+  get ortalama() {
+    return (this.a + this.b + this.c) / 3;
+  },
+};
+
+console.log(olcum.ortalama); // 2
+
+// Prototip üzerinden miras alındığında bile "erişilen nesne" kazanır
+const cocuk = Object.create(olcum);
+cocuk.a = 10;
+console.log(cocuk.ortalama); // 5  → this === cocuk
+```
+
+Bu, kural 3'ün (`nesne.fn()`) property erişimine uzanmış hâlidir.
+
+## Zincirleme: `return this`
+
+Metot `this` döndürürse çağrılar zincirlenebilir. Kütüphanelerde çok yaygın bir
+kalıptır (jQuery, Zod, query builder'lar…).
+
+<ExampleCard
+  title="Zincirlenebilir merdiven"
+  level="orta"
+  summary="Her metot this döndürdüğü sürece çağrılar birbirine eklenebilir."
+>
+
+```js title="ladder.js"
+let merdiven = {
+  basamak: 0,
+  yukari() {
+    this.basamak++;
+    return this;
+  },
+  asagi() {
+    this.basamak--;
+    return this;
+  },
+  goster() {
+    console.log(this.basamak);
+    return this;
+  },
+};
+
+merdiven.yukari().yukari().asagi().goster().asagi().goster();
+// 1
+// 0
+```
+
+`return this` olmasaydı ilk `yukari()` çağrısı `undefined` döner ve zincir
+`Cannot read properties of undefined (reading 'yukari')` ile kırılırdı.
+
+</ExampleCard>
+
+<Callout type="interview">
+  Zincirleme sorusu geldiğinde ekleyeceğin bir cümle var: *"`return this`
+  zincirleme sağlar ama metodun asıl dönüş değerini elinden alır. Bu yüzden
+  komut (command) metotlarında uygundur, sorgu (query) metotlarında değil."* Bu,
+  **command-query separation** ilkesine yapılan bir göndermedir ve senior
+  seviyede fark yaratır.
+</Callout>
+
+## Motor seviyesi: `[[ThisMode]]` ve `OrdinaryCallBindThis`
+
+Yukarıdaki kuralların hepsi spesifikasyonda tek bir soyut işlemden çıkar:
+`OrdinaryCallBindThis(func, calleeContext, thisArg)`.
+
+<Callout type="expert">
+  Her fonksiyon nesnesinin `[[ThisMode]]` adında bir iç slotu vardır ve üç
+  değerden birini alır:
+
+- **`lexical`** → arrow fonksiyonlar. `OrdinaryCallBindThis` hemen çıkar,
+  hiçbir `this` bağlaması yapılmaz. `this` bu yüzden sıradan bir değişken gibi
+  kapsam zincirinde aranır — ve `call`/`bind` bu yüzden etkisizdir.
+- **`strict`** → `thisArg` ne ise o kullanılır. Dönüştürme yok, ikame yok.
+- **`global`** (sloppy) → `thisArg` `undefined` veya `null` ise realm'in
+  `[[GlobalThisValue]]`'su, değilse `ToObject(thisArg)` kullanılır.
+  Primitive'lerin sarmalanması bu satırdan gelir.
+
+Sonrasında motor bir **Function Environment Record** oluşturur ve `this`'i
+oraya yazar. Arrow fonksiyonun kendi Function Environment Record'u
+`this` bağlaması içermediği için arama dış kayda düşer — "lexical this"in
+tüm sırrı budur. `super`'in `[[HomeObject]]` üzerinden çözülmesi de aynı
+kayıtta tutulur; bu yüzden arrow içinde `super` da dış metodun `super`'idir.
+
+</Callout>
+
+Yani "arrow `this`'i miras alır" cümlesi bir benzetme değil, tam anlamıyla
+mekanizmanın kendisidir: miras almaz, **kendi tanımı olmadığı için** dışarıya
+bakar.
+
+## Mülakat soruları
+
+### Soru 1 — object literal içinde `this`
+
+```js title="q1.js"
+function kullaniciYap() {
+  return {
+    ad: "Anıl",
+    ref: this,
+  };
+}
+
+let kullanici = kullaniciYap();
+console.log(kullanici.ref.ad); // ?
+```
+
+**Cevap:** `TypeError: Cannot read properties of undefined (reading 'ad')`
+(sloppy mode'da `undefined`).
+
+**Neden:** `ref: this` satırı object literal'in _içindedir_ ama object literal
+kapsam oluşturmaz. Buradaki `this`, `kullaniciYap` fonksiyonunun `this`'idir.
+Fonksiyon `kullaniciYap()` biçiminde, yani noktasız çağrıldığı için kural 4
+işler ve `this` `undefined` olur.
+
+Düzeltmek için `this`'i nesnenin _kendisi_ çağrıldığında hesaplat:
+
+```js title="q1-fix.js"
+function kullaniciYap() {
+  return {
+    ad: "Anıl",
+    ref() {
+      return this; // artık kullanici.ref() çağrısında hesaplanır
+    },
+  };
+}
+
+let kullanici = kullaniciYap();
+console.log(kullanici.ref().ad); // "Anıl"
+```
+
+### Soru 2 — hangi nokta kazanır?
+
+```js title="q2.js"
+const a = {
+  ad: "A",
+  f() {
+    return this.ad;
+  },
+};
+const b = { ad: "B", ic: a };
+
+console.log(b.ic.f()); // ?
+```
+
+**Cevap:** `"A"`. Kural 3, zincirin **son** noktasına bakar: `b.ic.f()`
+çağrısında `f`'ten hemen önceki nesne `a`'dır.
+
+### Soru 3 — parantez içine alınca
+
+```js title="q3.js"
+const kullanici = {
+  ad: "Anıl",
+  selamla() {
+    return this?.ad;
+  },
+};
+
+console.log(kullanici.selamla()); // ?
+console.log(kullanici.selamla()); // ?
+console.log((0, kullanici.selamla)()); // ?
+```
+
+**Cevap:** `"Anıl"`, `"Anıl"`, `undefined`.
+
+**Neden:** İlk ikisinde ifade hâlâ bir _Reference_'tır ve nesne bilgisi taşınır.
+Üçüncüde virgül operatörü referansı **değere** indirger; nesne bilgisi kaybolur
+ve fonksiyon kural 4 ile çağrılır. Bu kalıp, bundler'ların ürettiği kodda
+"indirect call" yapmak için bilerek kullanılır.
+
+### Soru 4 — arrow ile method
+
+```js title="q4.js"
+const sayac = {
+  n: 0,
+  artirArrow: () => {
+    this.n++;
+  },
+  artirNormal() {
+    this.n++;
+  },
+};
+
+sayac.artirArrow();
+sayac.artirNormal();
+console.log(sayac.n); // ?
+```
+
+**Cevap:** `1`. `artirArrow` içindeki `this` nesne değil, dış kapsamın `this`'idir
+(modülde `undefined` → `TypeError`; klasik script'te `globalThis` → sessizce
+`globalThis.n` üzerinde çalışır ve `sayac.n`'yi etkilemez).
+
+### Soru 5 — `bind` üstüne `bind`
+
+```js title="q5.js"
+function f() {
+  return this.x;
+}
+
+const g = f.bind({ x: 1 });
+const h = g.bind({ x: 2 });
+
+console.log(h()); // ?
+```
+
+**Cevap:** `1`. Bound function yeniden bağlanamaz; ikinci `bind`'ın `thisArg`'ı
+yok sayılır.
+
+## Ne zaman hangisi?
+
+- **Nesnenin kendi verisiyle çalışan davranış** → shorthand metot + `this`.
+- **Callback'e metot geçirmek** → `bind` ile bir kez bağla ve sakla; ya da
+  `() => nesne.metot()` sarmalayıcısı kullan (nesne referansı değişmiyorsa).
+- **İç içe callback'te dış `this`'i korumak** → arrow fonksiyon.
+- **Fonksiyonu geçici olarak başka bir nesne üzerinde çalıştırmak** → `call` /
+  `apply`.
+- **Nesne metodu tanımlamak** → asla arrow.
+
+<CheatSheet
+  title="Özet"
+  rows={[
+    {
+      term: "metot",
+      meaning: "Değeri fonksiyon olan property. Özel bir tür değil.",
+    },
+    {
+      term: "kisa() {}",
+      meaning:
+        "[[HomeObject]] var, super çalışır, new ile çağrılamaz, prototype yok.",
+    },
+    {
+      term: "uzun: function(){}",
+      meaning: "[[HomeObject]] yok, super SyntaxError, new ile çağrılabilir.",
+    },
+    {
+      term: "new Fn()",
+      meaning: "Kural 1 — en yüksek öncelik. this = yeni nesne.",
+    },
+    {
+      term: "fn.call / apply",
+      meaning: "Kural 2 — hemen çalışır. call tek tek, apply dizi alır.",
+    },
+    {
+      term: "fn.bind(o)",
+      meaning:
+        "Kural 2 — kalıcı bağ, yeni fonksiyon döndürür, yeniden bağlanamaz.",
+    },
+    {
+      term: "nesne.fn()",
+      meaning: "Kural 3 — this = noktadan hemen önceki nesne.",
+    },
+    {
+      term: "fn()",
+      meaning: "Kural 4 — strict: undefined, sloppy: globalThis.",
+    },
+    {
+      term: "() => this",
+      meaning:
+        "Kural dışı — kendi this'i yok, dış kapsamdan okur. call/bind etkisiz.",
+    },
+    {
+      term: "this substitution",
+      meaning:
+        "Sadece sloppy mode: null/undefined → globalThis, primitive → ToObject.",
+    },
+    {
+      term: "return this",
+      meaning: "Zincirleme sağlar; sorgu metotlarında kullanma.",
+    },
+    {
+      term: "[[ThisMode]]",
+      meaning: "lexical | strict | global — tüm kuralları üreten iç slot.",
+    },
+  ]}
+/>
+
+## Kaynaklar
+
+- [javascript.info — Object methods, "this"](https://javascript.info/object-methods)
+- [javascript.info — Function binding](https://javascript.info/bind)
+- [MDN — `this`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/this)
+- [MDN — Method definitions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Functions/Method_definitions)
+- [MDN — `Function.prototype.bind()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/bind)
+- [ECMA-262 — Ordinary and Exotic Objects Behaviours (`OrdinaryCallBindThis`)](https://tc39.es/ecma262/multipage/ordinary-and-exotic-objects-behaviours.html)

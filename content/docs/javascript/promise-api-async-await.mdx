@@ -1,0 +1,534 @@
+---
+title: "Promise API & async/await"
+description: "Altı statik metodun hangisinin ne zaman doğru olduğu, async/await'in gerçekte ne yaptığı, sıralı await tuzağı ve iptal edilebilir asenkron kod."
+category: javascript
+level: baslangic-uzman
+tags: ["Promise.all", "allSettled", "race", "any", "async", "await", "AbortController", "concurrency"]
+order: 6
+duration: 34
+updated: "2026-09-01"
+---
+
+[Bir önceki makale](/docs/javascript/promises) tek bir promise'in nasıl
+davrandığını kurdu. Bu makale iki soruyla ilgileniyor: **birden fazla promise'i
+nasıl birleştiririz** ve **`async`/`await` bu resmin neresinde durur.**
+
+İkisi birbirine bağlı, çünkü `async`/`await`'in en yaygın kötü kullanımı tam
+olarak bir birleştirme hatasıdır: paralel olabilecek işleri farkında olmadan
+sıraya dizmek.
+
+## Altı statik metot
+
+Hepsi bir iterable alır ve tek bir promise döndürür. Aralarındaki fark
+**ne beklediklerinde** ve **hataya nasıl tepki verdiklerinde**.
+
+| Metot | Neyi bekler | Sonuç | Hata davranışı |
+|---|---|---|---|
+| `Promise.all` | Hepsinin **dolmasını** | Sonuç dizisi, **giriş sırasında** | İlk reddetmede hemen reddeder |
+| `Promise.allSettled` | Hepsinin **yerleşmesini** | Durum nesneleri dizisi | **Asla reddetmez** |
+| `Promise.race` | İlk **yerleşeni** | O promise'in sonucu | İlk yerleşen hataysa reddeder |
+| `Promise.any` | İlk **dolanı** | O promise'in sonucu | Hepsi reddederse `AggregateError` |
+| `Promise.resolve` | — | Dolmuş promise | — |
+| `Promise.reject` | — | Reddedilmiş promise | — |
+
+### `Promise.all`
+
+```js title="promise-all.js"
+const [kullanici, ayarlar, bildirimler] = await Promise.all([
+  fetch("/api/user").then((r) => r.json()),
+  fetch("/api/settings").then((r) => r.json()),
+  42, // promise olmayan değerler olduğu gibi geçer
+]);
+```
+
+İki davranışı ezberlemeye değer:
+
+- **Sıra korunur.** Dizideki konum, tamamlanma sırasına değil **giriş sırasına**
+  göredir. En yavaş biten ilk sıradaysa yine ilk sıradadır.
+- **İlk hata her şeyi bitirir.** Bir promise reddettiği anda `Promise.all`
+  reddeder ve diğerlerinin sonucunu tamamen unutur.
+
+<Callout type="warning">
+  "Diğerlerini unutur" cümlesi **"diğerlerini iptal eder" demek değildir.**
+  Reddetme anında hâlâ uçmakta olan istekler uçmaya devam eder; veritabanına
+  kayıt atan, e-posta gönderen, dosya yazan bir iş varsa o **yan etkiler
+  gerçekleşir** — sen sonucu görmesen bile.
+
+  Promise'in iptal diye bir kavramı yoktur. Gerçekten durdurman gerekiyorsa
+  altta yatan işlemi durdurmalısın: `AbortController`. Aşağıda.
+</Callout>
+
+### `Promise.allSettled`
+
+Hiçbir zaman reddetmez; her giriş için bir durum nesnesi döner.
+
+```js title="all-settled.js"
+const sonuclar = await Promise.allSettled([
+  fetch("/api/a"),
+  fetch("/api/b"),
+]);
+
+// [{ status: "fulfilled", value: Response },
+//  { status: "rejected",  reason: TypeError }]
+
+const basarililar = sonuclar
+  .filter((s) => s.status === "fulfilled")
+  .map((s) => s.value);
+```
+
+"Hepsini dene, kaçı tuttuysa onunla devam et" senaryosunun doğru aracı budur:
+panelde altı widget'ın verisini çekiyorsan, biri patladı diye beşini de
+kaybetmek istemezsin.
+
+### `Promise.race` ve `Promise.any`
+
+İkisi de "ilk gelen" der ama **neyi saydıkları** farklıdır:
+
+```js title="race-vs-any.js"
+const hizliHata = Promise.reject(new Error("hızlı hata"));
+const yavasBasari = new Promise((r) => setTimeout(() => r("yavaş başarı"), 100));
+
+await Promise.race([hizliHata, yavasBasari]); // ✗ reddeder: "hızlı hata"
+await Promise.any([hizliHata, yavasBasari]);  // ✓ "yavaş başarı"
+```
+
+`race` ilk **yerleşeni** alır — hata da yerleşmedir. `any` ise reddetmeleri
+görmezden gelip ilk **dolanı** bekler; hepsi reddederse `AggregateError` ile
+reddeder ve tüm hatalar `.errors` dizisindedir.
+
+```js title="aggregate-error.js"
+try {
+  await Promise.any([fetch("/a"), fetch("/b")]);
+} catch (e) {
+  console.log(e instanceof AggregateError); // true
+  console.log(e.errors);                    // [Error, Error]
+}
+```
+
+<ExampleCard
+  title="Aynı girdi, dört farklı cevap"
+  level="orta"
+  summary="Üç promise: biri 100 ms'de dolar, biri 50 ms'de reddeder, biri 200 ms'de dolar."
+>
+
+```js title="four-methods.js"
+const gec    = new Promise((r) => setTimeout(() => r("geç"), 200));
+const orta   = new Promise((r) => setTimeout(() => r("orta"), 100));
+const erkenX = new Promise((_, rej) => setTimeout(() => rej(new Error("X")), 50));
+
+await Promise.all([gec, orta, erkenX]);
+// ✗ 50 ms'de reddeder: Error("X")
+
+await Promise.allSettled([gec, orta, erkenX]);
+// ✓ 200 ms'de: [fulfilled "geç", fulfilled "orta", rejected Error("X")]
+
+await Promise.race([gec, orta, erkenX]);
+// ✗ 50 ms'de reddeder: Error("X")  ← hata da "yerleşme"dir
+
+await Promise.any([gec, orta, erkenX]);
+// ✓ 100 ms'de: "orta"  ← reddetmeler atlanır
+```
+
+</ExampleCard>
+
+### Hangisini ne zaman?
+
+| İhtiyaç | Doğru araç |
+|---|---|
+| Hepsi lazım, biri eksikse anlamsız | `Promise.all` |
+| Kaçı tuttuysa onunla devam et | `Promise.allSettled` |
+| Aynı veriyi veren birden çok kaynak, en hızlısı yeter | `Promise.any` |
+| Zaman aşımı / ilk sonuç ne olursa olsun | `Promise.race` |
+| Değeri promise'e sarmak (API tutarlılığı) | `Promise.resolve` |
+
+<Callout type="interview">
+  "`Promise.all` ile `Promise.allSettled` farkı nedir?" sorusunun ezber cevabı
+  "biri hata verince patlar, diğeri patlamaz"dır. Fark yaratan ek cümle şudur:
+
+  *"`all` reddettiğinde diğer promise'ler iptal olmaz, çalışmaya devam eder — bu
+  yüzden yan etkili işlemlerde `allSettled` daha güvenlidir. Ayrıca `all`
+  reddedince diğerlerinin reddetmeleri 'yakalanmamış' sayılabilir."*
+</Callout>
+
+## `async` / `await`
+
+Üç cümlelik sözleşme:
+
+1. **`async` fonksiyon her zaman promise döndürür.** Döndürdüğün sıradan değer
+   otomatik olarak dolmuş bir promise'e sarılır; fırlattığın hata reddetmeye
+   dönüşür.
+2. **`await` promise'in yerleşmesini bekler** ve sonucunu verir; reddetme ise
+   `throw` olarak yüzeye çıkar.
+3. **`await` fonksiyonu durdurmaz, askıya alır.** Kalan kod bir microtask olarak
+   kuyruklanır. Ana iş parçacığı bu sırada başka işlere bakar.
+
+```js title="async-basics.js"
+async function veriGetir() {
+  const yanit = await fetch("/api");
+  if (!yanit.ok) throw new Error(`HTTP ${yanit.status}`);
+  return yanit.json();
+}
+
+// Eşdeğeri:
+function veriGetirThen() {
+  return fetch("/api").then((yanit) => {
+    if (!yanit.ok) throw new Error(`HTTP ${yanit.status}`);
+    return yanit.json();
+  });
+}
+```
+
+Hata yönetimi sıradan `try..catch`'e döner — `async`/`await`'in asıl kazancı da
+budur:
+
+```js title="try-catch.js"
+async function guvenli() {
+  try {
+    const veri = await veriGetir();
+    return veri;
+  } catch (e) {
+    // Hem fetch'in ağ hatası hem bizim fırlattığımız HTTP hatası burada
+    console.error(e);
+    return null;
+  } finally {
+    yukleniyorKapat();
+  }
+}
+```
+
+<Callout type="expert">
+  `await`'in mekaniği [Event Loop](/docs/javascript/event-loop) makalesinde
+  ayrıntılı: fonksiyon askıya alınır, kalan kısım microtask kuyruğuna girer.
+  Buradaki kritik ayrıntı, 2018'deki V8 optimizasyonuyla `await`'in hazır bir
+  promise için **üç değil bir** microtask turu harcamaya başlamasıdır.
+
+  Bir başka ince nokta: `await` yalnızca promise değil, **thenable** de kabul
+  eder — hatta promise olmayan sıradan bir değeri de bekleyebilirsin
+  (`await 42`), ki bu da bir microtask turu harcar. Bu yüzden gereksiz `await`
+  yazmak ücretsiz değildir; sıcak bir döngüde ölçülebilir.
+</Callout>
+
+### Top-level await
+
+ES modüllerinin en üst seviyesinde `await` doğrudan kullanılabilir:
+
+```js title="top-level-await.js"
+// Sadece modülde (import/export içeren dosyada) çalışır
+const config = await fetch("/config.json").then((r) => r.json());
+
+export default config;
+```
+
+<Callout type="warning">
+  Top-level `await` bedava değil: bu modülü **import eden her modül**, senin
+  `await`'in bitmesini bekler. Modül grafiğinin tepesinde ağır bir top-level
+  `await` koymak, uygulamanın ilk çizimini geciktirir.
+
+  Klasik script'te (`<script>`, `type="module"` olmadan) ise sözdizimi hatası
+  verir; oradaki çözüm bir `async` IIFE'dir.
+</Callout>
+
+## En sık hata: paralel işi sıraya dizmek
+
+`await` okunabilir olduğu için farkında olmadan her şeyi sıralı hâle getirmek
+çok kolaydır.
+
+<ExampleCard
+  title="600 ms mi, 200 ms mi?"
+  level="uzman"
+  summary="Birbirinden bağımsız üç istek. Yazım biçimi süreyi üçe katlıyor."
+>
+
+```js title="sequential-vs-parallel.js"
+// ✗ Sıralı: 200 + 200 + 200 = ~600 ms
+async function yavas() {
+  const a = await getir("/a"); // bitmesini bekle
+  const b = await getir("/b"); // sonra başlat
+  const c = await getir("/c");
+  return [a, b, c];
+}
+
+// ✓ Paralel: ~200 ms
+async function hizli() {
+  return Promise.all([getir("/a"), getir("/b"), getir("/c")]);
+}
+
+// ✓ Ara biçim: önce hepsini BAŞLAT, sonra bekle
+async function hizliAcik() {
+  const pA = getir("/a"); // istek burada uçuyor
+  const pB = getir("/b");
+  const pC = getir("/c");
+  return [await pA, await pB, await pC];
+}
+```
+
+Ayrım şu: `getir("/a")` çağrısı isteği **başlatır**; `await` sadece *sonucunu
+bekler*. Çağrıları erken yapıp `await`'leri sona bırakırsan işler paralel akar.
+
+</ExampleCard>
+
+**Ne zaman sıralı doğrudur?** `b`, `a`'nın sonucuna ihtiyaç duyuyorsa. Bağımlılık
+varsa sıralı yazmak doğru; yoksa gereksiz gecikmedir.
+
+Döngüler için aynı ayrım:
+
+```js title="loop-patterns.js"
+// ✗ Her tur bir öncekini bekler
+for (const id of idler) {
+  sonuclar.push(await getir(id));
+}
+
+// ✓ Hepsi birlikte
+const sonuclar = await Promise.all(idler.map((id) => getir(id)));
+
+// ✓ Sınırlı eşzamanlılık gerekiyorsa (sunucuyu boğmamak için) parçala
+for (const parca of parcala(idler, 5)) {
+  sonuclar.push(...(await Promise.all(parca.map(getir))));
+}
+```
+
+<Callout type="frontend">
+  React'te bu tuzağın karşılığı, birbirini bekleyen `useEffect` zincirleridir:
+  bir efekt kullanıcıyı çeker, ikinci efekt kullanıcı gelince siparişleri çeker.
+  İki ağ turu, ardışık. Bağımlılık gerçekse kaçınılmaz; değilse tek bir
+  `Promise.all` ile tek turda biter.
+
+  Server Components tarafında da aynı kural geçerlidir: aynı bileşende ardışık
+  iki `await` iki tur demektir. Bağımsızlarsa `Promise.all` ile birleştir —
+  ya da veri çekmeyi iki ayrı bileşene bölüp `Suspense` ile paralel akıt.
+</Callout>
+
+## Sinsi tuzak: sahte "yakalanmamış reddetme"
+
+Promise'leri erken başlatıp geç `await` etmek performans için doğrudur, ama bir
+yan etkisi vardır: **bir promise reddettiğinde henüz ona bağlanmış bir handler
+yoksa**, motor onu yakalanmamış sayar.
+
+```js title="false-unhandled.js"
+// ✗ pB, pA beklenirken reddederse "unhandledrejection" tetiklenir
+const pA = getir("/a");
+const pB = getir("/b");
+
+const a = await pA; // 2 sn sürüyor
+const b = await pB; // pB 100 ms'de reddettiyse iş işten geçti
+```
+
+<Callout type="expert">
+  Bir reddetmenin yakalanmamış sayılıp sayılmadığı, **microtask kontrolünün
+  sonunda** karara bağlanır. Yukarıdaki kodda `pB`'ye handler ancak `pA`
+  çözüldükten sonra bağlanır — o ana kadar reddetme sahipsizdir.
+
+  Node'da bu, sürecin çökmesi demek olabilir. İki doğru kalıp var:
+
+  ```js
+  // 1) Hepsini aynı anda "sahiplen"
+  const [a, b] = await Promise.all([getir("/a"), getir("/b")]);
+
+  // 2) Sonuçları ayrı ayrı isteyeceksen allSettled ile sahiplen
+  const [ra, rb] = await Promise.allSettled([getir("/a"), getir("/b")]);
+  ```
+
+  `Promise.all` ve `allSettled`, verilen tüm promise'lere **anında** handler
+  bağladıkları için bu sorunu doğal olarak çözer. `allSettled` ayrıca hiçbir
+  zaman reddetmediği için beklemeyi de zorunlu kılmaz.
+</Callout>
+
+## İptal: `AbortController`
+
+Promise iptal edilemez; **altındaki işlem** iptal edilir.
+
+```js title="abort.js"
+const kontrol = new AbortController();
+
+const istek = fetch("/api/agir", { signal: kontrol.signal });
+
+// Kullanıcı sayfadan ayrıldı, arama kutusuna yeni harf yazdı, vs.
+kontrol.abort();
+
+try {
+  await istek;
+} catch (e) {
+  if (e.name === "AbortError") {
+    // beklenen iptal — hata olarak raporlama
+  } else {
+    throw e;
+  }
+}
+```
+
+Zaman aşımı için `Promise.race` kalıbı yaygındır ama **eksiktir**: yarışı
+kaybeden istek iptal olmaz, bağlantıyı ve sunucu kaynağını tutmaya devam eder.
+Doğrusu hazır sinyal kullanmaktır:
+
+```js title="abort-modern.js"
+// 5 saniyede kendini iptal eden sinyal — setTimeout temizliği derdi yok
+await fetch("/api", { signal: AbortSignal.timeout(5000) });
+
+// Birden çok sebebi birleştir: ya süre doldu ya kullanıcı vazgeçti
+const sinyal = AbortSignal.any([
+  AbortSignal.timeout(5000),
+  kullaniciKontrol.signal,
+]);
+await fetch("/api", { signal: sinyal });
+```
+
+<Callout type="frontend">
+  React'te `useEffect` temizliği bu sinyalin doğal yeri: bağımlılık değişince
+  veya bileşen sökülünce uçan istek iptal edilir, "unmounted component'e state
+  yazma" uyarısı da kökten çözülür.
+
+  ```jsx
+  useEffect(() => {
+    const kontrol = new AbortController();
+    getir(id, { signal: kontrol.signal }).then(setVeri).catch(yut);
+    return () => kontrol.abort();
+  }, [id]);
+  ```
+</Callout>
+
+## `for await...of`
+
+Bir dizi promise'i **geldikleri sırayla** işlemek için:
+
+```js title="for-await.js"
+async function* sayfalar(url) {
+  let sonraki = url;
+  while (sonraki) {
+    const yanit = await fetch(sonraki);
+    const veri = await yanit.json();
+    yield veri.items;
+    sonraki = veri.next;
+  }
+}
+
+for await (const parca of sayfalar("/api/liste")) {
+  ekle(parca); // her sayfa gelir gelmez ekrana
+}
+```
+
+Bu, `Promise.all`'ın yapamadığı şeyi yapar: **kısmi sonuçları akıtmak.**
+`Promise.all` hepsi bitene kadar hiçbir şey vermez; async iterator ilkini alır
+almaz devam eder.
+
+## Mülakat soruları
+
+### Soru 1 — `all` sırası
+
+```js title="q1.js"
+const a = new Promise((r) => setTimeout(() => r("a"), 300));
+const b = new Promise((r) => setTimeout(() => r("b"), 100));
+
+console.log(await Promise.all([a, b])); // ?
+```
+
+**Cevap:** `["a", "b"]`. Sonuç dizisi **giriş sırasına** göredir, bitiş sırasına
+değil.
+
+### Soru 2 — `race` mi `any` mi?
+
+Bir görseli üç CDN'den çekmek istiyorsun; hangisi önce gelirse o. Biri 404
+veriyor. Hangisini kullanırsın?
+
+**Cevap:** `Promise.any`. `race` ilk **yerleşeni** aldığı için 404'ün hızlı
+hatası yarışı kazanır ve her şey çöker. `any` reddetmeleri atlar.
+
+### Soru 3 — sıralama
+
+```js title="q3.js"
+async function f() {
+  console.log("1");
+  await null;
+  console.log("2");
+}
+
+console.log("3");
+f();
+console.log("4");
+Promise.resolve().then(() => console.log("5"));
+```
+
+**Cevap:** `3 1 4 2 5`. `f()` çağrısı gövdeyi senkron başlatır (`1`), `await`
+kalanı microtask yapar. `4` senkron. Microtask kuyruğunda önce `2` (daha erken
+kuyruklandı), sonra `5`.
+
+### Soru 4 — bu kod kaç saniye sürer?
+
+```js title="q4.js"
+async function calis() {
+  const a = await bekle(1000);
+  const b = await bekle(1000);
+  const c = await Promise.all([bekle(1000), bekle(1000)]);
+  return [a, b, c];
+}
+```
+
+**Cevap:** ~3 saniye. İlk ikisi sıralı (1 + 1), üçüncüsü paralel (1). İlk ikisi
+bağımsızsa bu kod yanlıştır ve ~2 saniyeye inebilir.
+
+### Soru 5 — `async` fonksiyon ne döndürür?
+
+```js title="q5.js"
+async function f() {
+  return 1;
+}
+
+console.log(f());          // ?
+console.log(await f());    // ?
+
+async function g() {
+  throw new Error("x");
+}
+console.log(g());          // ?
+```
+
+**Cevap:** `Promise { 1 }`, `1`, ve `Promise { <rejected> Error: x }`. `async`
+fonksiyon **her zaman** promise döndürür; `throw` reddetmeye dönüşür.
+
+### Soru 6 — tehlikeli `Promise.all`
+
+```js title="q6.js"
+const sonuc = await Promise.all([
+  kayitOlustur(veri1),
+  kayitOlustur(veri2), // bu reddediyor
+  kayitOlustur(veri3),
+]);
+```
+
+**Soru:** Reddetme sonrası veritabanının durumu nedir?
+
+**Cevap:** 1 ve 3 numaralı kayıtlar **oluşmuş olabilir**. `Promise.all`
+reddetmek onları iptal etmez. Atomik davranış istiyorsan ya `allSettled` ile
+hepsini bekleyip telafi (compensation) yazarsın ya da işi sunucu tarafında tek
+bir işlem (transaction) hâline getirirsin.
+
+<CheatSheet
+  title="Özet"
+  rows={[
+    { term: "Promise.all", meaning: "Hepsi dolsun. Sıra girişe göre. İlk hatada hemen reddeder." },
+    { term: "all + hata", meaning: "Diğerlerini İPTAL ETMEZ; yan etkiler gerçekleşmeye devam eder." },
+    { term: "Promise.allSettled", meaning: "Hepsi yerleşsin. Asla reddetmez. status/value/reason döner." },
+    { term: "Promise.race", meaning: "İlk YERLEŞEN. Hata da yerleşmedir — hızlı hata yarışı kazanır." },
+    { term: "Promise.any", meaning: "İlk DOLAN. Hepsi reddederse AggregateError, hatalar .errors'ta." },
+    { term: "async fn", meaning: "Her zaman promise döner. return → fulfilled, throw → rejected." },
+    { term: "await", meaning: "Durdurmaz, askıya alır. Kalan kod microtask olur. Thenable de kabul eder." },
+    { term: "top-level await", meaning: "Sadece modülde. İmport eden her modülü bekletir." },
+    { term: "sıralı await", meaning: "Bağımsız işlerde en sık performans hatası. Önce başlat, sonra bekle." },
+    { term: "döngüde await", meaning: "Hepsi bağımsızsa Promise.all + map; sunucuyu boğmamak için parçala." },
+    { term: "sahte unhandled", meaning: "Erken başlatıp geç await → handler'sız reddetme. all/allSettled çözer." },
+    { term: "AbortController", meaning: "Promise iptal edilmez; altındaki işlem edilir. AbortError'ı ayır." },
+    { term: "AbortSignal.timeout(ms)", meaning: "Kendi kendine iptal eden sinyal. race'li timeout'tan üstün." },
+    { term: "AbortSignal.any([...])", meaning: "Birden çok iptal sebebini tek sinyalde birleştirir." },
+    { term: "for await...of", meaning: "Kısmi sonuçları akıtır. Promise.all'ın yapamadığı şey." },
+  ]}
+/>
+
+## Kaynaklar
+
+- [javascript.info — Promise API](https://javascript.info/promise-api)
+- [javascript.info — Async/await](https://javascript.info/async-await)
+- [javascript.info — Microtasks](https://javascript.info/microtask-queue)
+- [MDN — `Promise`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise)
+- [MDN — `AbortSignal.timeout()`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal/timeout_static)
+- [MDN — `AbortSignal.any()`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal/any_static)
+- [Jake Archibald — The gotcha of unhandled promise rejections](https://jakearchibald.com/2023/unhandled-rejections/)
+- [V8 — Faster async functions and promises](https://v8.dev/blog/fast-async)

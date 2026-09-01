@@ -1,0 +1,695 @@
+---
+title: "Function Binding"
+description: "this'i kalıcı olarak sabitlemek: bind'ın iç mekanizması, kısmi uygulama, currying, polyfill yazımı ve bind'a hiç ihtiyaç duymayan modern alternatifler."
+category: javascript
+level: baslangic-uzman
+tags: ["bind", "this", "partial application", "currying", "polyfill", "callback", "closure"]
+order: 3
+duration: 26
+updated: "2026-08-30"
+---
+
+Bir önceki makalede `this`'in çağrı anında belirlendiğini gördük. Bu makale o
+kuralın pratikteki en can sıkıcı sonucuyla ilgileniyor: **metodu bir callback
+olarak geçirdiğin anda `this` kayboluyor.**
+
+`bind` bu sorunun standart cevabı. Ama `bind` yalnızca bir yardımcı fonksiyon
+değil; motorun ayrı bir nesne türü ürettiği, kendi `[[Call]]` ve `[[Construct]]`
+davranışı olan özel bir mekanizma. Aşağıda önce sorunu, sonra `bind`'ın içini,
+sonra da `bind`'ı bir *fonksiyon fabrikası* olarak kullanmayı (kısmi uygulama ve
+currying) ele alıyoruz — ve sonunda, modern kodda `bind`'a çoğu zaman neden hiç
+gerek kalmadığını.
+
+<Callout type="child">
+  Bir çalışanı düşün: "raporu hazırla" görevini biliyor ama **hangi departmanın**
+  raporunu hazırlayacağını her seferinde ona söylemen gerekiyor. `bind`, o
+  çalışana kalıcı bir kimlik kartı takmaktır: artık nereye gönderirsen gönder,
+  hep kendi departmanının raporunu hazırlar.
+</Callout>
+
+## Sorunun tam tanımı
+
+```js title="losing-this.js"
+let kullanici = {
+  ad: "Anıl",
+  selamla() {
+    console.log(`Merhaba, ${this.ad}!`);
+  },
+};
+
+setTimeout(kullanici.selamla, 100); // "Merhaba, undefined!"
+```
+
+Kritik ayrıntı şu: `setTimeout(kullanici.selamla, 100)` yazdığında
+`kullanici.selamla` ifadesi **argüman olarak geçirilmeden önce değerlendirilir**.
+Geriye çıplak bir fonksiyon nesnesi kalır; hangi nesneden geldiği bilgisi
+argümanla birlikte taşınmaz. `setTimeout` da onu `func()` biçiminde çağırır.
+
+Aynı kopma her yerde olur: `const f = obj.metot`, `const { metot } = obj`,
+`arr.map(obj.metot)`, `promise.then(obj.metot)`, `el.addEventListener("click", obj.metot)`.
+
+<Callout type="warning">
+  Bu, "`setTimeout` bozuk" ya da "React garip davranıyor" meselesi değil. Dilin
+  kuralı: **`this` argümanla birlikte seyahat etmez.** Fonksiyonu bir yerden bir
+  yere taşıdığın her an bu riski alıyorsun.
+</Callout>
+
+## Çözüm 1: sarmalayıcı — ve gizli kusuru
+
+En hızlı çözüm çağrıyı bir fonksiyonun içine almaktır:
+
+```js title="wrapper.js"
+setTimeout(() => kullanici.selamla(), 100); // "Merhaba, Anıl!"
+```
+
+Nokta geri geldi, `this` doğru. Ama sarmalayıcı `kullanici` **değişkenini**
+çağrı anında okur:
+
+```js title="wrapper-race.js"
+setTimeout(() => kullanici.selamla(), 1000);
+
+kullanici = { ad: "Başkası", selamla() { console.log("Başka biri!"); } };
+
+// 1 saniye sonra → "Başka biri!"
+```
+
+Kısa ömürlü callback'lerde bu neredeyse hiç sorun olmaz. Ancak bir listeye
+kaydedilen, uzun süre yaşayan handler'larda (event listener, observer, timer)
+gerçek bir hata kaynağıdır.
+
+## Çözüm 2: `bind`
+
+```js title="bind-solution.js"
+const selamlaBagli = kullanici.selamla.bind(kullanici);
+
+selamlaBagli();                 // "Merhaba, Anıl!"
+setTimeout(selamlaBagli, 1000); // değişken değişse bile "Merhaba, Anıl!"
+```
+
+`bind`, `this`'i **çağrı anındaki nesne değerine** sabitler. Değişkenin sonradan
+değişmesi bu bağı bozmaz — çünkü bağ değişkene değil, nesnenin kendisine kurulur.
+
+### Nesnenin tüm metotlarını bağlamak
+
+```js title="bind-all.js"
+for (let anahtar in kullanici) {
+  if (typeof kullanici[anahtar] === "function") {
+    kullanici[anahtar] = kullanici[anahtar].bind(kullanici);
+  }
+}
+```
+
+Bazı kütüphaneler bunu `bindAll` adıyla hazır sunar. Modern kodda nadiren
+gerekir; sınıf alanları (class fields) aynı işi daha ucuza yapar — birazdan.
+
+## `bind`'ın içinde ne var?
+
+`bind` sıradan bir fonksiyon döndürmez. **Bound function exotic object** adında,
+üç gizli slot taşıyan ayrı bir nesne türü üretir:
+
+| Slot | İçerik |
+|---|---|
+| `[[BoundTargetFunction]]` | Sarmalanan asıl fonksiyon |
+| `[[BoundThis]]` | Sabitlenen `this` değeri |
+| `[[BoundArguments]]` | Önden eklenecek argümanlar |
+
+Bu nesnenin `[[Call]]` ve `[[Construct]]` iç metotları da farklıdır:
+
+- **`[[Call]](thisArgument, args)`** → gelen `thisArgument`'i **tamamen yok sayar**,
+  `[[BoundThis]]`'i kullanır ve `[[BoundArguments]]`'ı `args`'ın önüne ekleyip
+  hedefi çağırır.
+- **`[[Construct]](args, newTarget)`** → `this` yok sayılır (çünkü `new` kendi
+  nesnesini üretir), argümanlar yine önden eklenir. `newTarget` bound function'ın
+  kendisiyse **hedef fonksiyonla değiştirilir** — `new` ile üretilen nesnenin
+  doğru prototipi almasının sebebi budur.
+
+<ExampleCard
+  title="Bound function'ın gözlemlenebilir tüm farkları"
+  level="uzman"
+  summary="bind'ın döndürdüğü nesne, hedef fonksiyonun bir kopyası değildir; farklı kimlikte, farklı davranan yeni bir nesnedir."
+>
+
+```js title="bound-function-internals.js"
+function tanit(selam, noktalama) {
+  return `${selam}, ${this.ad}${noktalama}`;
+}
+tanit.surum = "1.0"; // kendi property'si
+
+const bagli = tanit.bind({ ad: "Anıl" }, "Merhaba");
+
+// 1) Ad ve arite
+console.log(bagli.name);   // "bound tanit"
+console.log(bagli.length); // 1  → 2 (hedef) - 1 (sabitlenen argüman)
+
+// 2) Kendi property'leri kopyalanmaz
+console.log(bagli.surum);  // undefined
+
+// 3) prototype property'si YOKTUR
+console.log(tanit.prototype); // {}
+console.log(bagli.prototype); // undefined
+// class X extends tanit.bind(null) {} → TypeError
+
+// 4) Yeniden bağlanamaz — ikinci thisArg sessizce yok sayılır
+const tekrar = bagli.bind({ ad: "Elif" });
+console.log(tekrar("!")); // "Merhaba, Anıl!"
+
+// 5) Kimlik: her bind yeni bir nesne
+console.log(tanit.bind(null) === tanit.bind(null)); // false
+```
+
+</ExampleCard>
+
+<Callout type="expert">
+  4. maddedeki davranış bir "özellik" değil, `[[Call]]` algoritmasının doğal
+  sonucudur: dıştaki bound function iç bound function'ı çağırırken bir
+  `thisArgument` geçirir, ama iç bound function o argümanı **yok sayar** ve kendi
+  `[[BoundThis]]`'ini kullanır. Yani zincir uzar, `this` sabit kalır — argümanlar
+  ise her katmanda birikir:
+
+  ```js
+  function log(...a) { console.log(this, ...a); }
+  const b1 = log.bind("ilk", 1);
+  const b2 = b1.bind("ikinci", 2);
+  b2(3); // "ilk" 1 2 3
+  ```
+
+  `prototype` property'sinin olmaması da aynı yerden gelir: bound function
+  `[[Construct]]`'ı hedefe devrettiği için kendi prototipini tutmasına gerek
+  yoktur. Bu yüzden `new bagli()` çalışır ama `extends bagli` çalışmaz —
+  `extends` prototip zincirini kurmak için `prototype` property'sini arar.
+</Callout>
+
+## Kısmi uygulama (partial application)
+
+`bind`'ın ikinci ve sonraki argümanları, hedefin **ilk parametrelerini sabitler**.
+Bu, `this` ile hiç ilgisi olmayan ikinci bir yeteneğidir:
+
+```js title="partial-basic.js"
+function carp(a, b) {
+  return a * b;
+}
+
+const iki_kati = carp.bind(null, 2);
+
+iki_kati(3);  // 6
+iki_kati(10); // 20
+```
+
+`this`'e ihtiyaç yoksa ilk argüman `null` (veya `undefined`) geçilir. Strict
+mode'da bu değer aynen `this` olur; ama fonksiyon `this` kullanmadığı için önemi
+yoktur.
+
+Neden işe yarar? Aynı fonksiyonun tekrar eden argümanını her seferinde yazmak
+yerine, **o argümanı içine gömülü yeni bir fonksiyon** üretirsin:
+
+<ExampleCard
+  title="Log fonksiyonundan özel varyantlar üretmek"
+  level="orta"
+  summary="Tekrar eden argümanı sabitlemek, çağrı yerlerini hem kısaltır hem yanlış argüman verme ihtimalini ortadan kaldırır."
+>
+
+```js title="partial-log.js"
+function log(seviye, kaynak, mesaj) {
+  console.log(`[${seviye}] ${kaynak}: ${mesaj}`);
+}
+
+// Bu modülün tüm logları aynı kaynaktan ve aynı seviyeden
+const hata = log.bind(null, "ERROR", "auth");
+const bilgi = log.bind(null, "INFO", "auth");
+
+hata("token süresi doldu");  // "[ERROR] auth: token süresi doldu"
+bilgi("oturum açıldı");      // "[INFO] auth: oturum açıldı"
+```
+
+</ExampleCard>
+
+### `this`'i korumak isteyen kısmi uygulama
+
+`bind` ile kısmi uygulama yaparken `this`'i de sabitlemek zorunda kalırsın —
+ikisi tek çağrıda gelir. Bir metodun `this`'ini **çağrı anında** çözmesini,
+sadece argümanı sabitlemek istiyorsan kendi yardımcını yazarsın:
+
+```js title="partial-helper.js"
+function kismi(fn, ...sabitler) {
+  return function (...digerleri) {
+    // this'i geçirdiğimiz için nesne bağlaması korunur
+    return fn.call(this, ...sabitler, ...digerleri);
+  };
+}
+
+let kullanici = {
+  ad: "Anıl",
+  soyle(saat, mesaj) {
+    console.log(`[${saat}] ${this.ad}: ${mesaj}`);
+  },
+};
+
+kullanici.simdiSoyle = kismi(kullanici.soyle, "10:00");
+kullanici.simdiSoyle("Merhaba"); // "[10:00] Anıl: Merhaba"
+```
+
+Fark burada: `kismi` içindeki `fn.call(this, ...)` sayesinde `this`,
+`kullanici.simdiSoyle()` çağrısında normal kuralla belirlenir. `bind` kullansaydık
+`this` de donmuş olurdu.
+
+## Currying
+
+Currying, `f(a, b, c)` biçiminde çağrılan bir fonksiyonu `f(a)(b)(c)` biçimine
+**dönüştürmektir**. Fonksiyonu çağırmaz; sadece çağrılma biçimini değiştirir.
+
+```js title="curry-simple.js"
+function curry2(f) {
+  return (a) => (b) => f(a, b);
+}
+
+const carp = (a, b) => a * b;
+const curriedCarp = curry2(carp);
+
+curriedCarp(2)(3); // 6
+```
+
+Pratikte kullanılan sürüm, argüman sayısı yeterli olduğunda hemen çağıran
+"gelişmiş" varyanttır:
+
+```js title="curry-advanced.js"
+function curry(func) {
+  return function curried(...args) {
+    if (args.length >= func.length) {
+      return func.apply(this, args);
+    }
+    return function (...args2) {
+      return curried.apply(this, args.concat(args2));
+    };
+  };
+}
+
+function topla(a, b, c) {
+  return a + b + c;
+}
+
+const curriedTopla = curry(topla);
+
+curriedTopla(1, 2, 3); // 6  — normal çağrı da çalışır
+curriedTopla(1)(2)(3); // 6
+curriedTopla(1, 2)(3); // 6
+curriedTopla(1)(2, 3); // 6
+```
+
+`func.length` fonksiyonun **beklenen** parametre sayısıdır. Yeterli argüman
+biriktiyse hedef çağrılır; birikmediyse toplamayı sürdüren yeni bir sarmalayıcı
+döner.
+
+<Callout type="warning">
+  Currying, parametre sayısının **sabit** olmasını gerektirir. `function f(...args)`
+  biçiminde yazılmış bir fonksiyonun `length`'i `0`'dır; gelişmiş `curry` onu
+  ilk çağrıda hemen çalıştırır ve currying hiç gerçekleşmez. Varsayılan değerli
+  parametreler de `length`'i keser: `function f(a, b = 1, c)` için `length` `1`'dir.
+</Callout>
+
+### Currying ile kısmi uygulama aynı şey değil
+
+| | Kısmi uygulama | Currying |
+|---|---|---|
+| Ne yapar | Bazı argümanları sabitler | Çağrı biçimini `f(a)(b)(c)`'ye çevirir |
+| Kaç argüman sabitlenir | İstediğin kadar, tek seferde | Her adımda bir (veya daha fazla) |
+| Sonuç | Kalan argümanları alan fonksiyon | Argüman biriktiren fonksiyon zinciri |
+| Dildeki karşılığı | `fn.bind(null, a)` | Elle yazılan `curry` yardımcısı |
+
+<Callout type="interview">
+  "Currying nedir?" sorusuna verilecek en iyi cevap iki cümledir: *"Bir
+  fonksiyonu tek argümanlı çağrı zincirine dönüştürmektir; fonksiyonu
+  çalıştırmaz, sadece çağrılma biçimini değiştirir."* Ardından farkı
+  netleştirirsin: *"Kısmi uygulama argüman sabitler, currying yapıyı değiştirir.
+  `bind` kısmi uygulama yapar, currying yapmaz."* Bu ayrımı yapan aday azdır.
+</Callout>
+
+## `bind` polyfill'i yazmak
+
+Klasik bir mülakat sorusu. Zorluk `this`'i geçirmekte değil, **`new` ile çağrılma
+ihtimalini** doğru ele almakta.
+
+<ExampleCard
+  title="new destekli bind polyfill'i"
+  level="uzman"
+  summary="Naive sürüm new ile çağrıldığında bağlı context'i kullanır ve prototip zincirini bozar; doğru sürüm new.target'a bakar."
+>
+
+```js title="my-bind.js"
+Function.prototype.benimBind = function (context, ...onArgumanlar) {
+  const hedef = this;
+
+  if (typeof hedef !== "function") {
+    throw new TypeError("benimBind, fonksiyon olmayan bir değer üzerinde çağrıldı");
+  }
+
+  function bagli(...cagriArgumanlari) {
+    // new ile mi çağrıldık? Öyleyse bağlı context'i YOK SAY.
+    const yeniIle = new.target !== undefined;
+
+    return hedef.apply(
+      yeniIle ? this : context,
+      onArgumanlar.concat(cagriArgumanlari),
+    );
+  }
+
+  // new bagli() ile üretilen nesne, hedefin prototipini almalı
+  if (hedef.prototype) {
+    bagli.prototype = Object.create(hedef.prototype);
+  }
+
+  return bagli;
+};
+
+// Normal çağrı
+function tanit() { return this.ad; }
+const b = tanit.benimBind({ ad: "Anıl" });
+console.log(b()); // "Anıl"
+
+// new ile çağrı
+function Nokta(x, y) { this.x = x; this.y = y; }
+Nokta.prototype.yaz = function () { return `${this.x},${this.y}`; };
+
+const YEkseni = Nokta.benimBind(null, 0);
+const p = new YEkseni(5);
+
+console.log(p.yaz());          // "0,5"  ← bağlı context (null) yok sayıldı
+console.log(p instanceof Nokta); // true ← prototip zinciri korundu
+```
+
+</ExampleCard>
+
+<Callout type="expert">
+  ES6 öncesinde `new.target` yoktu; polyfill'ler `new` çağrısını bir ara fonksiyon
+  ve `instanceof` ile tespit ederdi:
+
+  ```js
+  function fNOP() {}
+  fNOP.prototype = hedef.prototype;
+  bagli.prototype = new fNOP();
+  // bagli içinde:
+  hedef.apply(this instanceof fNOP ? this : context, ...);
+  ```
+
+  Mülakatta ekleyeceğin dürüst not: **hiçbir polyfill gerçek `bind`'ı tam taklit
+  edemez.** Gerçek bound function'ın `prototype` property'si yoktur; bizim
+  polyfill'imizde `new` desteği için ona ihtiyaç var. Ayrıca gerçek `bind`
+  `name`'i `"bound tanit"` yapar ve `length`'i doğru hesaplar; polyfill'de
+  `bagli.length` rest parametresi yüzünden `0`'dır. Bu farkı kendin söylemek,
+  ezberden yazdığını değil anladığını gösterir.
+</Callout>
+
+## Türev numara: metot çıkarma (`uncurryThis`)
+
+`bind`'ın az bilinen bir kullanımı, bir prototip metodunu **serbest fonksiyona**
+çevirmektir:
+
+```js title="uncurry-this.js"
+// Array.prototype.slice.call(x, ...) yerine:
+const slice = Function.prototype.call.bind(Array.prototype.slice);
+slice({ 0: "a", 1: "b", length: 2 }); // ["a", "b"]
+
+// Object.prototype.hasOwnProperty.call(o, k) yerine:
+const kendiVarMi = Function.prototype.call.bind(Object.prototype.hasOwnProperty);
+kendiVarMi({ a: 1 }, "a"); // true
+```
+
+Nasıl çalışıyor: `call`'ın `this`'i "çağrılacak fonksiyon"dur. Onu
+`Array.prototype.slice`'a bağlarsan, ortaya çıkan fonksiyon ilk **normal**
+argümanını `this` olarak alan bir `slice` olur.
+
+<Callout type="expert">
+  Bu kalıba kütüphane kodunda rastlarsın ve sebebi estetik değildir: `obj.slice()`
+  yazmak, `obj`'un o metodu üzerine yazmış olma ihtimaline açıktır. Prototip
+  metodunu modül yüklenirken bir kez yakalayıp saklamak, sonradan yapılan
+  prototype kirletmelerinden (`prototype pollution`) etkilenmemeyi sağlar. npm'deki
+  `call-bound` paketinin varlık sebebi tam olarak budur.
+
+  Uygulama kodunda ise artık gerek yok — modern karşılıkları var:
+  `Object.hasOwn(o, k)`, `Array.from(arrayLike)`, `[...iterable]`.
+</Callout>
+
+## `bind`'a ihtiyaç duymayan modern alternatifler
+
+Bugün yazılan kodda `bind` çağrısına nadiren rastlanır. Sebebi `bind`'ın kötü
+olması değil, sorunun kaynağının ortadan kalkmasıdır.
+
+### Sınıf alanı olarak arrow (class fields)
+
+```js title="class-field.js"
+class Sayac {
+  sayi = 0;
+
+  // Prototipte değil, HER ÖRNEKTE ayrı bir arrow fonksiyon
+  artir = () => {
+    this.sayi++;
+  };
+}
+
+const s = new Sayac();
+const kopmus = s.artir;
+kopmus(); // çalışır — arrow'un this'i sınıf gövdesinden geliyor
+```
+
+Bedeli var: bu fonksiyon `Sayac.prototype`'ta değil, her örnekte ayrı ayrı
+yaşar. Binlerce örnek üreten bir yapıda bellek maliyeti gerçektir; ayrıca
+prototip üzerinden override edilemez ve `super` ile çağrılamaz.
+
+### `handleEvent` nesne kalıbı
+
+`addEventListener`, fonksiyon yerine **`handleEvent` metodu olan bir nesne** de
+kabul eder. O zaman `this` otomatik olarak nesnenin kendisidir:
+
+```js title="handle-event.js"
+class Panel {
+  ad = "Ayarlar";
+
+  constructor(el) {
+    // this.handleEvent değil, doğrudan this geçiliyor
+    el.addEventListener("click", this);
+    el.addEventListener("keydown", this);
+  }
+
+  handleEvent(olay) {
+    console.log(this.ad); // "Ayarlar" — bind yok, arrow yok
+    if (olay.type === "click") { /* ... */ }
+  }
+}
+```
+
+Tek bir referansla birden fazla olay tipini karşılayabilir ve
+`removeEventListener("click", this)` ile temiz biçimde kaldırılabilir.
+
+### `AbortController` ile kaldırma
+
+`bind`/arrow ile üretilen handler'ın asıl derdi kaldırılamamasıdır. Referansı
+saklamak yerine sinyal kullan:
+
+```js title="abort-controller.js"
+const kontrol = new AbortController();
+
+el.addEventListener("click", () => this.tikla(), { signal: kontrol.signal });
+el.addEventListener("scroll", () => this.kaydir(), { signal: kontrol.signal });
+
+// Hepsini tek hamlede kaldır
+kontrol.abort();
+```
+
+<Callout type="frontend">
+  React'te bu sorunun tamamı fonksiyon bileşenleriyle ortadan kalktı: `this` yok,
+  dolayısıyla bağlanacak bir şey de yok. Yerini alan soru **referans kimliği**:
+
+  ```jsx
+  // ✗ Her render'da yeni fonksiyon → memo'lu çocuk her render'da yeniden çizilir
+  <Liste onSec={(id) => sec(id)} />
+
+  // ✓ Kimliği sabit
+  const onSec = useCallback((id) => sec(id), [sec]);
+  <Liste onSec={onSec} />
+  ```
+
+  Yani `bind`'ın "her çağrıda yeni fonksiyon üretir" tuzağı kaybolmadı; sadece
+  `bind`'dan `useCallback`'e taşındı. React Compiler bunu otomatik hâlledince
+  soru büyük ölçüde kapanıyor — ama altında yatan mekanizma aynı.
+</Callout>
+
+### Hangi durumda hangisi?
+
+| Durum | Tercih |
+|---|---|
+| Sınıf metodunu callback olarak geçirmek | Sınıf alanı olarak arrow |
+| Tek nesnenin birden çok olayını dinlemek | `handleEvent` nesnesi |
+| Listener'ları toplu kaldırmak | `AbortController` + `signal` |
+| Argüman sabitlemek | `fn.bind(null, a)` veya `(...r) => fn(a, ...r)` |
+| Prototip metodunu serbest fonksiyona çevirmek | `Function.prototype.call.bind(...)` |
+| Kısa ömürlü, tek seferlik callback | Arrow sarmalayıcı |
+
+## Tuzaklar
+
+<Callout type="warning">
+  **1. Her `bind` yeni bir referans üretir.**
+
+  ```js
+  el.addEventListener("click", this.tikla.bind(this));
+  el.removeEventListener("click", this.tikla.bind(this)); // ✗ kaldırmaz
+  ```
+
+  Bir kez bağla, sakla, ikisinde de aynı referansı kullan.
+
+  **2. Bound function hedefi ve `this`'i canlı tutar.**
+  `[[BoundThis]]` ve `[[BoundArguments]]` slotları güçlü referanstır. Bir DOM
+  düğümüne bağlanmış bir handler'ı kaldırmayı unutursan, o düğüm ve tüm alt
+  ağacı çöp toplayıcıdan kurtulur.
+
+  **3. Fonksiyonun kendi property'leri taşınmaz.**
+  `sayHi.test = 5` yaptıysan, `sayHi.bind(o).test` `undefined`'dır. Fonksiyona
+  metadata iliştiren kütüphanelerde (dekoratörler, validator'lar) bu sessiz bir
+  hataya dönüşebilir.
+
+  **4. Arrow fonksiyon bağlanamaz.** `(() => this).bind(o)` hata vermez, sessizce
+  hiçbir şey yapmaz.
+</Callout>
+
+### Peki performans?
+
+Eski V8 sürümlerinde `bind` gözle görülür biçimde yavaştı ve arrow sarmalayıcı
+tavsiye edilirdi. V8 5.9'dan (Node 8.3) itibaren `bind` bir kat hızlandı ve fark
+kapandı. Bugünkü mikro-benchmark'lar birbiriyle çelişiyor: kurulum maliyeti
+arrow'da, çağrı maliyeti `bind`'da daha düşük çıkabiliyor.
+
+Pratik sonuç: **bu ikisi arasında performansa göre seçim yapma.** Kararı
+okunabilirlik ve *referans kimliği* belirlesin — hangisini seçersen seç, sıcak
+döngü içinde her turda yeni fonksiyon üretmemek asıl önemli olan şeydir.
+
+## Mülakat soruları
+
+### Soru 1 — bağlı fonksiyon metot olarak
+
+```js title="q1.js"
+function f() {
+  console.log(this);
+}
+
+let kullanici = {
+  g: f.bind(null),
+};
+
+kullanici.g(); // ?
+```
+
+**Cevap:** `null`. Bound function'ın context'i sert biçimde sabitlenmiştir;
+nokta gösterimi onu değiştiremez, çünkü `[[Call]]` gelen `thisArgument`'i yok sayar.
+
+### Soru 2 — üst üste bind
+
+```js title="q2.js"
+function f() {
+  console.log(this.ad);
+}
+
+f = f.bind({ ad: "Anıl" }).bind({ ad: "Elif" });
+
+f(); // ?
+```
+
+**Cevap:** `"Anıl"`. Bir fonksiyon yeniden bağlanamaz.
+
+### Soru 3 — bind sonrası property
+
+```js title="q3.js"
+function selamla() {
+  console.log(this.ad);
+}
+selamla.test = 5;
+
+let bagli = selamla.bind({ ad: "Anıl" });
+
+console.log(bagli.test); // ?
+```
+
+**Cevap:** `undefined`. `bind` yeni bir nesne döndürür; hedefin kendi
+property'lerini kopyalamaz.
+
+### Soru 4 — callback'i düzelt
+
+```js title="q4.js"
+function sifreSor(basarili, basarisiz) {
+  if (prompt("Şifre?") === "1234") basarili();
+  else basarisiz();
+}
+
+let kullanici = {
+  ad: "Anıl",
+  girisTamam() { console.log(`${this.ad} giriş yaptı`); },
+  girisHata() { console.log(`${this.ad} giriş yapamadı`); },
+};
+
+sifreSor(kullanici.girisTamam, kullanici.girisHata); // ✗ this kayboldu
+```
+
+**Cevap:**
+
+```js title="q4-fix.js"
+sifreSor(kullanici.girisTamam.bind(kullanici), kullanici.girisHata.bind(kullanici));
+// veya
+sifreSor(() => kullanici.girisTamam(), () => kullanici.girisHata());
+```
+
+### Soru 5 — bind + new
+
+```js title="q5.js"
+function Kisi(ad) {
+  this.ad = ad;
+}
+
+const Bagli = Kisi.bind({ ad: "yok sayılacak" });
+const k = new Bagli("Anıl");
+
+console.log(k.ad);              // ?
+console.log(k instanceof Kisi); // ?
+```
+
+**Cevap:** `"Anıl"` ve `true`. `[[Construct]]` çağrısında `[[BoundThis]]` yok
+sayılır ve `newTarget`, hedef fonksiyonla değiştirilir; bu yüzden prototip
+zinciri doğru kurulur.
+
+### Soru 6 — kısmi uygulamada `length`
+
+```js title="q6.js"
+function f(a, b, c) {}
+const g = f.bind(null, 1);
+
+console.log(f.length, g.length, g.name); // ?
+```
+
+**Cevap:** `3`, `2`, `"bound f"`.
+
+<CheatSheet
+  title="Özet"
+  rows={[
+    { term: "sorun", meaning: "this argümanla seyahat etmez; metot koparıldığında bağ kopar." },
+    { term: "() => o.f()", meaning: "Sarmalayıcı. Değişkeni çağrı anında okur — uzun ömürlü handler'da riskli." },
+    { term: "o.f.bind(o)", meaning: "this'i nesne DEĞERİNE sabitler. Değişken değişse de bağ bozulmaz." },
+    { term: "[[BoundThis]]", meaning: "Sabitlenen this. [[Call]] gelen thisArgument'i yok sayar." },
+    { term: "[[BoundArguments]]", meaning: "Önden eklenen argümanlar — kısmi uygulamanın kaynağı." },
+    { term: "bind ile new", meaning: "this yok sayılır, argümanlar korunur, newTarget hedefe çevrilir." },
+    { term: "bound.name / length", meaning: "'bound f' ve hedef.length eksi sabitlenen argüman sayısı." },
+    { term: "bound.prototype", meaning: "Yoktur. new çalışır ama extends TypeError verir." },
+    { term: "yeniden bind", meaning: "İkinci thisArg yok sayılır; sadece argümanlar birikir." },
+    { term: "kısmi uygulama", meaning: "Bazı argümanları sabitler: fn.bind(null, a)." },
+    { term: "currying", meaning: "f(a,b,c) → f(a)(b)(c). Yapıyı değiştirir, argüman sabitlemez." },
+    { term: "func.length", meaning: "curry'nin durma koşulu. Rest ve varsayılan parametreler bunu bozar." },
+    { term: "call.bind(m)", meaning: "Prototip metodunu serbest fonksiyona çevirir (uncurryThis)." },
+    { term: "modern alternatif", meaning: "Class field arrow, handleEvent nesnesi, AbortController signal." },
+    { term: "en sık tuzak", meaning: "Her bind yeni referans → removeEventListener ve memo kırılır." },
+  ]}
+/>
+
+## Kaynaklar
+
+- [javascript.info — Function binding](https://javascript.info/bind)
+- [javascript.info — Currying](https://javascript.info/currying-partials)
+- [MDN — `Function.prototype.bind()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/bind)
+- [MDN — `Function.prototype.call()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/call)
+- [MDN — `EventTarget.addEventListener()`](https://developer.mozilla.org/en-US/docs/Web/API/EventTarget/addEventListener)
+- [ECMA-262 — Bound Function Exotic Objects (10.4.1)](https://tc39.es/ecma262/multipage/ordinary-and-exotic-objects-behaviours.html#sec-bound-function-exotic-objects)
+- [v8-perf — bind vs closure ölçümleri](https://github.com/davidmarkclements/v8-perf)

@@ -1,0 +1,5 @@
+{
+  "title": "Makaleler",
+  "root": true,
+  "pages": ["index", "javascript", "react", "nextjs", "genel"]
+}

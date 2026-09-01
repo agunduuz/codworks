@@ -1,0 +1,555 @@
+---
+title: "Kopyalama & Array Metotları"
+description: "Referans mı değer mi, sığ kopya nerede kırılır, spread gerçekten derin kopyalar mı — ve array metotlarının hangisi ne döndürür."
+category: javascript
+level: baslangic-uzman
+tags: ["reference", "shallow copy", "deep copy", "structuredClone", "spread", "map", "filter", "reduce"]
+order: 7
+duration: 26
+updated: "2026-09-02"
+---
+
+Bu iki konu ayrı ayrı anlatılır ama tek bir soruya bağlanır:
+**"bu işlem orijinali değiştiriyor mu?"**
+
+Nesne kopyalama tarafında bu soru "kopyam gerçekten bağımsız mı" olur. Array
+metotları tarafında "bu metot yeni dizi mi döndürüyor, yoksa elimdekini mi
+bozuyor" olur. Aynı sorunun iki yüzü — ve React'te state'in neden güncellenmiş
+görünmediğinden, bir fonksiyonun çağıranın verisini neden bozduğuna kadar pek
+çok hatanın ortak kaynağı.
+
+<Callout type="child">
+  Bir kâğıda ev adresini yazıp arkadaşına verdin. Arkadaşın adresi kopyaladı ama
+  **ev tek**. O gidip mutfağı boyarsa, sen eve döndüğünde mutfak boyalı olur.
+  Nesne kopyalamak budur: adresi çoğaltırsın, evi değil.
+
+  Gerçekten ayrı bir ev istiyorsan evi baştan inşa etmen gerekir — üstelik
+  içindeki odaları da tek tek. İşte "derin kopya" bu.
+</Callout>
+
+## Referans mı, değer mi?
+
+Primitive'ler (`number`, `string`, `boolean`, `null`, `undefined`, `symbol`,
+`bigint`) **değer olarak** kopyalanır. Nesneler — diziler ve fonksiyonlar dahil —
+**referans olarak**.
+
+```js title="reference-vs-value.js"
+// Primitive: iki bağımsız değer
+let a = 5;
+let b = a;
+b = 10;
+console.log(a); // 5
+
+// Nesne: tek nesne, iki değişken
+let x = { sayi: 5 };
+let y = x;
+y.sayi = 10;
+console.log(x.sayi); // 10  ← aynı nesne
+```
+
+Karşılaştırma da referans üzerinden yapılır. `===` "içerikleri aynı mı" diye
+sormaz, **"aynı nesne mi"** diye sorar:
+
+```js title="comparison.js"
+console.log({} === {});           // false — iki ayrı nesne
+console.log([1, 2] === [1, 2]);   // false
+const o = {};
+console.log(o === o);             // true
+```
+
+<Callout type="warning">
+  `const` ile tanımlanan bir nesne **değiştirilemez değildir.** `const` sadece
+  değişkenin başka bir şeye *yeniden atanmasını* engeller; işaret ettiği nesnenin
+  içeriği serbesttir.
+
+  ```js
+  const kullanici = { ad: "Anıl" };
+  kullanici.ad = "Elif";  // ✓ serbest
+  kullanici = {};         // ✗ TypeError: Assignment to constant variable
+  ```
+
+  Gerçekten dondurmak istiyorsan `Object.freeze(kullanici)` — o da yine
+  **sığdır**, iç içe nesneleri dondurmaz.
+</Callout>
+
+## Sığ kopya (shallow) ve derin kopya (deep) farkı
+
+- **Sığ kopya:** Yeni bir üst nesne yaratır, ama property değerlerini **olduğu
+  gibi** kopyalar. Değer bir nesneyse, kopyalanan şey yine **referanstır**. Yani
+  bir seviye derinlik.
+- **Derin kopya:** Nesne ağacının tamamını yeniden üretir. Hiçbir seviyede
+  orijinalle paylaşılan referans kalmaz.
+
+Sığ kopya üretmenin üç yolu ve üçü de aynı sonucu verir:
+
+```js title="shallow-copies.js"
+const kullanici = {
+  ad: "Anıl",
+  adres: { sehir: "İstanbul", ilce: "Kadıköy" },
+};
+
+// 1) for..in
+const k1 = {};
+for (const anahtar in kullanici) k1[anahtar] = kullanici[anahtar];
+
+// 2) Object.assign
+const k2 = Object.assign({}, kullanici);
+
+// 3) Spread
+const k3 = { ...kullanici };
+
+// Üstteki seviye bağımsız
+console.log(k3 === kullanici);        // false ✓
+
+// İç seviye PAYLAŞILIYOR
+console.log(k3.adres === kullanici.adres); // true ✗
+```
+
+<ExampleCard
+  title="Sığ kopyanın kırıldığı an"
+  level="baslangic"
+  summary="Kopya bağımsız görünür, bir seviye aşağı inene kadar."
+>
+
+```js title="shallow-breaks.js"
+const orijinal = {
+  ad: "Anıl",
+  roller: ["admin"],
+  ayarlar: { tema: "koyu" },
+};
+
+const kopya = { ...orijinal };
+
+// Üst seviye: sorun yok
+kopya.ad = "Elif";
+console.log(orijinal.ad); // "Anıl" ✓ etkilenmedi
+
+// İç seviye: aynı nesne
+kopya.ayarlar.tema = "açık";
+console.log(orijinal.ayarlar.tema); // "açık" ✗ etkilendi
+
+kopya.roller.push("editor");
+console.log(orijinal.roller); // ["admin", "editor"] ✗ etkilendi
+```
+
+</ExampleCard>
+
+## Spread operatörü derin kopyalar mı?
+
+**Hayır.** `...` tam olarak **bir seviye** kopyalar. Bu hem nesneler hem diziler
+için geçerlidir ve konudaki en yaygın yanılgıdır.
+
+```js title="spread-is-shallow.js"
+const matris = [[1, 2], [3, 4]];
+const kopya = [...matris];
+
+kopya[0].push(99);
+console.log(matris[0]); // [1, 2, 99] ✗ iç diziler paylaşılıyor
+
+// İç içe spread de sadece bir seviye daha iner
+const derinceKopya = matris.map((satir) => [...satir]);
+derinceKopya[0].push(99);
+console.log(matris[0]); // [1, 2] ✓ bu seviye için yeterli
+```
+
+<Callout type="frontend">
+  React'te en sık görülen iki hata bunun doğrudan sonucu:
+
+  ```js
+  // ✗ Aynı referans → React "değişmedi" der, yeniden çizmez
+  kullanici.ayarlar.tema = "koyu";
+  setKullanici(kullanici);
+
+  // ✗ Üst seviye yeni ama ayarlar AYNI referans →
+  //   ayarlar'ı okuyan memo'lu bileşen güncellenmez
+  kullanici.ayarlar.tema = "koyu";
+  setKullanici({ ...kullanici });
+
+  // ✓ Değiştirdiğin yola kadar her seviyeyi yenile
+  setKullanici({
+    ...kullanici,
+    ayarlar: { ...kullanici.ayarlar, tema: "koyu" },
+  });
+  ```
+
+  React'in karşılaştırması `Object.is` ile **sığdır**; derin eşitlik kontrolü
+  yapmaz. Bu yüzden "değişen yola kadar yeni nesne üret" kuralı bir stil tercihi
+  değil, zorunluluktur. Immer gibi kütüphaneler bu zincirlemeyi senin yerine
+  yazar.
+</Callout>
+
+## Derin kopya seçenekleri
+
+| Yöntem | Derin mi | Döngüsel referans | Kaybettikleri |
+|---|---|---|---|
+| `{ ...obj }` · `Object.assign` | Hayır (1 seviye) | — | — |
+| `structuredClone(obj)` | **Evet** | ✓ korur | Fonksiyon, DOM düğümü, prototip, getter/setter |
+| `JSON.parse(JSON.stringify(obj))` | Evet | ✗ **hata fırlatır** | Çok şey — aşağıda |
+| `_.cloneDeep(obj)` (lodash) | Evet | ✓ korur | Kütüphane bağımlılığı |
+
+### `structuredClone` — modern doğru cevap
+
+```js title="structured-clone.js"
+const kullanici = {
+  ad: "Anıl",
+  dogum: new Date(1995, 0, 1),
+  roller: new Set(["admin"]),
+  adres: { sehir: "İstanbul" },
+};
+
+const kopya = structuredClone(kullanici);
+
+console.log(kopya.adres === kullanici.adres); // false ✓ gerçekten derin
+console.log(kopya.dogum instanceof Date);     // true  ✓ Date korunur
+console.log(kopya.roller instanceof Set);     // true  ✓ Set korunur
+```
+
+`Date`, `Map`, `Set`, `RegExp`, `ArrayBuffer`, `Blob` ve döngüsel referansları
+düzgün taşır. Tarayıcılarda 2022'den, Node'da 17'den beri var.
+
+<Callout type="expert">
+  `structuredClone`'un üç sessiz sınırı:
+
+  1. **Fonksiyon içeren nesnede `DataCloneError` fırlatır.** Metot taşıyan bir
+     yapılandırma nesnesini klonlayamazsın.
+  2. **Prototip zinciri kaybolur.** Bir `class` örneğini klonlarsan elinde düz
+     bir nesne kalır: `kopya instanceof MyClass` `false` döner ve metotları
+     çağıramazsın.
+  3. **Getter/setter düzleşir.** Sadece numaralandırılabilir (enumerable) kendi
+     property'leri kopyalanır; bir getter'ın *o anki değeri* sıradan bir
+     property olarak yazılır.
+
+  Yani `structuredClone` "veriyi" klonlar, "davranışı" değil. Sınıf örnekleri
+  için doğru yaklaşım genelde sınıfa kendi `clone()` metodunu yazmaktır.
+</Callout>
+
+### `JSON.parse(JSON.stringify(...))` neden kötü bir alışkanlık
+
+Yıllarca kullanıldı ama sessizce veri bozar:
+
+| Girdi | Sonuç |
+|---|---|
+| `undefined`, fonksiyon, `Symbol` (nesnede) | Property tamamen **silinir** |
+| `undefined`, fonksiyon, `Symbol` (dizide) | `null` olur |
+| `NaN`, `Infinity`, `-Infinity` | `null` olur |
+| `Date` | ISO **string**'e döner — artık `Date` değil |
+| `Map`, `Set`, `RegExp` | Boş nesne `{}` olur |
+| `BigInt` | `TypeError` fırlatır |
+| Döngüsel referans | `TypeError` fırlatır |
+
+Tek avantajı her yerde çalışması. Bugün `structuredClone` varken bunu bilerek
+seçmek için sebep kalmadı.
+
+## `map` ile `forEach` farkı — hangisi ne döner?
+
+En kısa cevap:
+
+| | `forEach` | `map` |
+|---|---|---|
+| Döndürdüğü | **`undefined`** | **Yeni dizi** (aynı uzunlukta) |
+| Amacı | Yan etki (side effect) | Dönüşüm (transformation) |
+| Zincirlenir mi | Hayır | Evet |
+| Callback'in dönüşü | Yok sayılır | Yeni dizinin elemanı olur |
+
+```js title="map-vs-foreach.js"
+const sayilar = [1, 2, 3];
+
+const a = sayilar.forEach((n) => n * 2);
+console.log(a); // undefined  ← callback'in dönüşü yok sayıldı
+
+const b = sayilar.map((n) => n * 2);
+console.log(b); // [2, 4, 6]
+
+console.log(sayilar); // [1, 2, 3] — ikisi de orijinali değiştirmedi
+```
+
+Karar kuralı tek cümle: **elinde yeni bir dizi kalacaksa `map`, kalmayacaksa
+`forEach`.**
+
+<Callout type="warning">
+  `map`'i `forEach` yerine kullanmak sessiz bir kod kokusudur:
+
+  ```js
+  // ✗ Dönen dizi kullanılmıyor — boşuna N elemanlık dizi üretildi
+  kullanicilar.map((k) => console.log(k.ad));
+
+  // ✓
+  kullanicilar.forEach((k) => console.log(k.ad));
+  ```
+
+  Ters yönü daha da kötü: `forEach` ile dışarıda bir diziye `push` etmek,
+  `map`'in tek satırda yaptığı işi üç satıra ve bir mutasyona çevirir.
+
+  Bir de şu: **`forEach` `await`'i beklemez.** `async` callback verirsen
+  `forEach` promise'leri yok sayar ve döngü anında biter. Sıralı asenkron iş
+  için `for...of`, paralel için `Promise.all(arr.map(...))` kullan.
+  (Bkz. [Promise API & async/await](/docs/javascript/promise-api-async-await))
+</Callout>
+
+## Hangi metot ne döndürür?
+
+Array metotlarını akılda tutmanın en pratik yolu bu tablodur:
+
+| Metot | Döndürür | Orijinali değiştirir mi |
+|---|---|---|
+| `map(fn)` | Aynı uzunlukta **yeni dizi** | Hayır |
+| `filter(fn)` | Koşulu geçenlerden **yeni dizi** | Hayır |
+| `find(fn)` | İlk eşleşen **eleman** veya `undefined` | Hayır |
+| `findIndex(fn)` | İlk eşleşenin **indeksi** veya `-1` | Hayır |
+| `findLast(fn)` | Sondan ilk eşleşen eleman | Hayır |
+| `some(fn)` | **Boolean** — en az biri uyuyor mu | Hayır |
+| `every(fn)` | **Boolean** — hepsi uyuyor mu | Hayır |
+| `reduce(fn, ilk)` | **Tek bir değer** (ne istersen) | Hayır |
+| `forEach(fn)` | **`undefined`** | Hayır |
+| `slice(a, b)` | Yeni dizi (parça) | Hayır |
+| `concat(...)` | Yeni dizi (birleşim) | Hayır |
+| `flatMap(fn)` | Bir seviye düzleştirilmiş yeni dizi | Hayır |
+| `sort(fn)` | **Aynı diziyi** (sıralanmış) | **Evet** |
+| `reverse()` | **Aynı diziyi** (ters) | **Evet** |
+| `splice(...)` | **Silinen elemanlar** dizisi | **Evet** |
+| `push` · `pop` · `shift` · `unshift` | Uzunluk / eleman | **Evet** |
+
+<Callout type="warning">
+  `sort` iki tuzak taşır:
+
+  ```js
+  // 1) Varsayılan karşılaştırma STRING'e göredir
+  [1, 2, 15, 30].sort();          // [1, 15, 2, 30] ✗
+  [1, 2, 15, 30].sort((a, b) => a - b); // [1, 2, 15, 30] ✓
+
+  // 2) Yerinde sıralar — props'tan gelen diziyi bozarsın
+  const sirali = [...dizi].sort((a, b) => a - b); // önce kopyala
+  ```
+
+  ES2023'ten beri kopyalayan sürümleri var ve okunması daha kolay:
+  `toSorted()`, `toReversed()`, `toSpliced()`, `with(i, v)`.
+
+  ```js
+  const sirali = dizi.toSorted((a, b) => a - b); // orijinal bozulmaz
+  const yeni = dizi.with(0, "değişti");          // index atamanın kopyalı hâli
+  ```
+
+  Node 20+ ve 2023 sonrası tarayıcılarda mevcut; daha eskiyi hedefliyorsan
+  `[...dizi].sort(...)` kalıbına devam.
+</Callout>
+
+## Pratik: üç mini görev
+
+Ortak veri:
+
+```js title="data.js"
+const sepet = [
+  { ad: "Klavye",   fiyat: 850,  adet: 1, kategori: "aksesuar" },
+  { ad: "Mouse",    fiyat: 90,   adet: 2, kategori: "aksesuar" },
+  { ad: "Monitör",  fiyat: 4200, adet: 1, kategori: "ekran" },
+  { ad: "Kablo",    fiyat: 45,   adet: 3, kategori: "aksesuar" },
+  { ad: "Dock",     fiyat: 1600, adet: 1, kategori: "ekran" },
+];
+```
+
+### 1. Fiyatı 100'ün üstündekilerin adları
+
+```js title="task-1.js"
+const adlar = sepet.filter((u) => u.fiyat > 100).map((u) => u.ad);
+// ["Klavye", "Monitör", "Dock"]
+```
+
+`filter` **hangilerini** seçtiğini, `map` **neyini** aldığını söyler. İkisini
+ayırmak, tek bir `reduce`'a sıkıştırmaktan daha okunur — ve iki geçiş yapması
+gerçek verilerde ölçülebilir bir maliyet değil.
+
+<Callout type="expert">
+  Tek geçişte yapmak istersen `flatMap` bunun için biçilmiş kaftandır: boş dizi
+  döndürerek eleman **eleyebilirsin**.
+
+  ```js
+  const adlar = sepet.flatMap((u) => (u.fiyat > 100 ? [u.ad] : []));
+  ```
+
+  Filtreleme ve dönüştürmeyi tek adımda yapar. Milyonluk dizilerde anlamlı;
+  onun altında `filter().map()` daha net.
+</Callout>
+
+### 2. Toplam sepet tutarı
+
+```js title="task-2.js"
+const toplam = sepet.reduce((t, u) => t + u.fiyat * u.adet, 0);
+// 850 + 180 + 4200 + 135 + 1600 = 6965
+```
+
+Başlangıç değeri `0` isteğe bağlı görünür ama **değildir**: boş dizide
+başlangıçsız `reduce` `TypeError` fırlatır. Ayrıca başlangıç, akümülatörün
+tipini de belirler.
+
+### 3. Kategoriye göre gruplama
+
+```js title="task-3.js"
+// Klasik: reduce ile
+const gruplar = sepet.reduce((g, u) => ((g[u.kategori] ??= []).push(u), g), {});
+
+// Okunur hâli — aynı işi yapar
+const gruplarAcik = sepet.reduce((g, u) => {
+  g[u.kategori] ??= [];
+  g[u.kategori].push(u);
+  return g;
+}, {});
+
+// { aksesuar: [Klavye, Mouse, Kablo], ekran: [Monitör, Dock] }
+```
+
+<Callout type="frontend">
+  Bu kalıbın artık dilde karşılığı var: **`Object.groupBy`** (Baseline 2024).
+
+  ```js
+  const gruplar = Object.groupBy(sepet, (u) => u.kategori);
+  ```
+
+  Sonuç `null` prototipli bir nesnedir — yani `hasOwnProperty` gibi miras
+  metotları yoktur, ki gruplama için bu bir avantajdır: `"constructor"` adında
+  bir kategoriyle karşılaşırsan sürpriz yaşamazsın.
+
+  Anahtarın string olmaması gerekiyorsa (nesne, tarih, sayı) `Map.groupBy`
+  kullanılır. Daha eski ortamları hedefliyorsan yukarıdaki `reduce` kalıbı hâlâ
+  doğru cevap.
+</Callout>
+
+## `reduce`'u gerçekten anlamak
+
+`reduce` diğerlerinden zor gelir çünkü **diğerlerinin hepsini kapsar**. Bir
+diziyi tek bir değere indirger — ve o "tek değer" sayı, string, nesne, hatta
+başka bir dizi olabilir.
+
+```js title="reduce-mental-model.js"
+// map'i reduce ile yazmak
+const iki_kati = sayilar.reduce((acc, n) => [...acc, n * 2], []);
+
+// filter'ı reduce ile yazmak
+const ciftler = sayilar.reduce((acc, n) => (n % 2 === 0 ? [...acc, n] : acc), []);
+```
+
+Bunları üretimde böyle yazmazsın — amaç şunu görmek: `map` ve `filter`, `reduce`
+üzerine kurulmuş **isimlendirilmiş özel hâllerdir**. `reduce`'a ancak
+ihtiyacın olan şeyin adı `map`/`filter` değilse başvur.
+
+<Callout type="expert">
+  Yukarıdaki iki örnek aynı zamanda bir anti-kalıptır: her turda `[...acc]`
+  yazmak diziyi baştan kopyalar, yani **O(n²)** yapar. Akümülatörü
+  değiştirmekten korkma — `reduce`'un akümülatörü zaten sana ait, dışarıya sızan
+  bir veri değil:
+
+  ```js
+  // ✗ Her turda yeni dizi
+  arr.reduce((acc, x) => [...acc, f(x)], []);
+
+  // ✓ Akümülatörü değiştir, sonra döndür
+  arr.reduce((acc, x) => { acc.push(f(x)); return acc; }, []);
+  ```
+
+  "Mutasyon kötüdür" kuralı **paylaşılan** veri içindir. Fonksiyonun içinde
+  yarattığın ve dışarı tek parça verdiğin bir akümülatör paylaşılan veri
+  değildir.
+</Callout>
+
+## Mülakat soruları
+
+### Soru 1 — kaç nesne var?
+
+```js title="q1.js"
+const a = { x: 1 };
+const b = { ...a };
+const c = a;
+
+console.log(a === b, a === c); // ?
+```
+
+**Cevap:** `false true`. `b` yeni bir nesne (sığ da olsa kopya), `c` ise aynı
+nesneye ikinci bir isim.
+
+### Soru 2 — spread yetti mi?
+
+```js title="q2.js"
+const ayarlar = { tema: "koyu", bildirim: { email: true } };
+const kopya = { ...ayarlar };
+
+kopya.tema = "açık";
+kopya.bildirim.email = false;
+
+console.log(ayarlar.tema, ayarlar.bildirim.email); // ?
+```
+
+**Cevap:** `"koyu" false`. Üst seviye korundu, iç nesne paylaşıldı. Spread bir
+seviye kopyalar.
+
+### Soru 3 — bu neden `undefined`?
+
+```js title="q3.js"
+const adlar = kullanicilar.forEach((k) => k.ad);
+console.log(adlar); // undefined
+```
+
+**Cevap:** `forEach` her zaman `undefined` döndürür; callback'in dönüş değeri yok
+sayılır. Dizi isteniyorsa `map`.
+
+### Soru 4 — `some` mu `every` mi?
+
+Boş bir dizide `[].some(fn)` ve `[].every(fn)` ne döner?
+
+**Cevap:** `some` → `false`, `every` → `true`. `every` boş kümede "vacuously
+true"dur: aksini gösteren eleman yok. Bu davranış "hepsi geçerli mi" kontrolünde
+sessiz hataya yol açabilir — önce `dizi.length` kontrolü gerekebilir.
+
+### Soru 5 — `sort` sonrası
+
+```js title="q5.js"
+const puanlar = [10, 9, 100, 1];
+const sirali = puanlar.sort();
+
+console.log(sirali);  // ?
+console.log(puanlar); // ?
+```
+
+**Cevap:** İkisi de `[1, 10, 100, 9]`. Varsayılan sıralama string'e göredir ve
+`sort` **yerinde** çalışıp aynı diziyi döndürür — `sirali` ile `puanlar` aynı
+nesnedir.
+
+### Soru 6 — `reduce` başlangıç değeri
+
+```js title="q6.js"
+[].reduce((a, b) => a + b);      // ?
+[].reduce((a, b) => a + b, 0);   // ?
+```
+
+**Cevap:** İlki `TypeError: Reduce of empty array with no initial value`, ikincisi
+`0`. Başlangıç değerini yazma alışkanlığı bu yüzden önemli.
+
+<CheatSheet
+  title="Özet"
+  rows={[
+    { term: "primitive", meaning: "Değer olarak kopyalanır. Bağımsızdır." },
+    { term: "nesne / dizi", meaning: "Referans olarak kopyalanır. === aynı nesne mi diye sorar." },
+    { term: "const nesne", meaning: "Yeniden atanamaz ama İÇERİĞİ değiştirilebilir." },
+    { term: "sığ kopya", meaning: "Bir seviye. İç nesneler orijinalle PAYLAŞILIR." },
+    { term: "spread derin mi", meaning: "HAYIR. {...o} ve [...a] tam olarak bir seviye kopyalar." },
+    { term: "structuredClone", meaning: "Gerçek derin kopya. Date/Map/Set ve döngüsel referansı korur." },
+    { term: "structuredClone sınırı", meaning: "Fonksiyonda hata; prototip ve getter/setter kaybolur." },
+    { term: "JSON kopyası", meaning: "Date→string, NaN→null, Map/Set→{}, undefined silinir, döngüsel patlar." },
+    { term: "forEach", meaning: "undefined döner. Yan etki içindir, zincirlenmez, await'i beklemez." },
+    { term: "map", meaning: "Aynı uzunlukta YENİ dizi döner. Dönüşüm içindir." },
+    { term: "filter / find", meaning: "filter → yeni dizi; find → tek eleman veya undefined." },
+    { term: "some / every", meaning: "Boolean. Boş dizide some=false, every=true." },
+    { term: "reduce", meaning: "Tek değere indirger. Başlangıç değerini HER ZAMAN yaz." },
+    { term: "mutasyon yapanlar", meaning: "sort, reverse, splice, push/pop/shift/unshift." },
+    { term: "sort tuzağı", meaning: "Varsayılan string karşılaştırır: [1,2,15].sort() → [1,15,2]." },
+    { term: "ES2023 kopyalı", meaning: "toSorted, toReversed, toSpliced, with — orijinali bozmaz." },
+    { term: "Object.groupBy", meaning: "reduce'lu gruplamanın dildeki hâli. null prototipli nesne döner." },
+  ]}
+/>
+
+## Kaynaklar
+
+- [javascript.info — Object references and copying](https://javascript.info/object-copy)
+- [javascript.info — Array methods](https://javascript.info/array-methods)
+- [MDN — `structuredClone()`](https://developer.mozilla.org/en-US/docs/Web/API/Window/structuredClone)
+- [MDN — `Object.groupBy()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/groupBy)
+- [MDN — `JSON.stringify()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON/stringify)
+- [MDN — `Array.prototype.toSorted()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/toSorted)

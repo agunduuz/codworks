@@ -1,4 +1,5 @@
 {
   "title": "React",
-  "pages": []
+  "icon": "Atom",
+  "pages": ["render-and-commit"]
 }

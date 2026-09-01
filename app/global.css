@@ -1,12 +1,454 @@
 @import 'tailwindcss';
-@import 'fumadocs-ui/css/neutral.css';
 @import 'fumadocs-ui/css/preset.css';
 
+/* =============================================================================
+   CODWORKS — DESIGN SYSTEM
+   Tema: "Atölye" — Grafit gövde, pirinç sinyal.
+   Kağıt/defter taklidi yok; ölçüm aleti, blueprint ve atölye tezgahı dili.
+   Token katmanları: 1) ham palet  2) semantik  3) fumadocs köprüsü
+   ========================================================================== */
+
+@theme {
+  /* --- 1. Tipografi ------------------------------------------------------ */
+  --font-display: var(--font-bricolage), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, monospace;
+
+  /* Okuma sütunu — uzun Türkçe teknik metin için ~72 karakter */
+  --spacing-reading: 46rem;
+
+  /* --- 2. Marka paleti (açık tema varsayılan) ---------------------------- */
+  --color-brand: #946017; /* pirinç — link, vurgu, CTA (4.83:1 / zemin) */
+  --color-brand-strong: #7d5214;
+  --color-brand-soft: #f5ead6;
+  --color-brand-glow: oklch(72% 0.13 72 / 0.16);
+
+  /* Kutucuk / kategori hue'ları — 5 ayrı hue: 25, 70, 180, 250, 290 */
+  --color-tone-child: #0e766c; /* 🧸 çocuğa anlatır gibi  */
+  --color-tone-frontend: #2358c9; /* ⚛️ frontend notu       */
+  --color-tone-interview: #7038d8; /* 💼 mülakat ipucu       */
+  --color-tone-expert: #946017; /* 🧠 uzman seviyesi      */
+  --color-tone-warning: #bd3a26; /* ⚠️ dikkat              */
+
+  --color-cat-javascript: #946017;
+  --color-cat-react: #0a7ea4;
+  --color-cat-nextjs: #1b2027;
+  --color-cat-genel: #0e766c;
+
+  /* --- 3. Yüzeyler ------------------------------------------------------- */
+  --color-surface: #f4f4f2;
+  --color-surface-raised: #fbfbfa;
+  --color-surface-sunken: #ececea;
+  --color-ink: #14171c;
+  --color-ink-soft: #5b6069;
+  --color-hairline: #dedddb;
+
+  /* --- 4. Fumadocs köprüsü (açık) ---------------------------------------- */
+  --color-fd-background: #f4f4f2;
+  --color-fd-foreground: #14171c;
+  --color-fd-muted: #ecebe8;
+  --color-fd-muted-foreground: #5b6069;
+  --color-fd-popover: #fbfbfa;
+  --color-fd-popover-foreground: #14171c;
+  --color-fd-card: #fbfbfa;
+  --color-fd-card-foreground: #14171c;
+  --color-fd-border: #dedddb;
+  --color-fd-primary: #946017;
+  --color-fd-primary-foreground: #fffdf8;
+  --color-fd-secondary: #ececea;
+  --color-fd-secondary-foreground: #14171c;
+  --color-fd-accent: #e7e5e0;
+  --color-fd-accent-foreground: #14171c;
+  --color-fd-ring: #946017;
+  --color-fd-overlay: rgb(20 23 28 / 0.32);
+
+  /* --- 5. Hareket -------------------------------------------------------- */
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --animate-rise: rise 620ms var(--ease-out-soft) both;
+  --animate-sheen: sheen 2.4s linear infinite;
+
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(14px);
+    }
+  }
+
+  @keyframes sheen {
+    to {
+      background-position: 200% center;
+    }
+  }
+}
+
+@theme static {
+  --color-fd-info: #2358c9;
+  --color-fd-warning: #bd3a26;
+  --color-fd-error: #bd3a26;
+  --color-fd-success: #0e766c;
+  --color-fd-idea: #946017;
+  --color-fd-diff-remove: rgb(189 58 38 / 0.12);
+  --color-fd-diff-remove-symbol: #bd3a26;
+  --color-fd-diff-add: rgb(14 118 108 / 0.12);
+  --color-fd-diff-add-symbol: #0e766c;
+}
+
+/* =============================================================================
+   KOYU TEMA — atölye ışığı kapalı, pirinç ısınıyor
+   ========================================================================== */
+.dark {
+  --color-brand: #e0a34f;
+  --color-brand-strong: #f0c07f;
+  --color-brand-soft: #2a2115;
+  --color-brand-glow: oklch(78% 0.13 72 / 0.18);
+
+  --color-tone-child: #4fd6c2;
+  --color-tone-frontend: #7ea8ff;
+  --color-tone-interview: #bda6ff;
+  --color-tone-expert: #e0a34f;
+  --color-tone-warning: #f89882;
+
+  --color-cat-javascript: #e0a34f;
+  --color-cat-react: #56c3e8;
+  --color-cat-nextjs: #e8e9ec;
+  --color-cat-genel: #4fd6c2;
+
+  --color-surface: #0b0d11;
+  --color-surface-raised: #14171d;
+  --color-surface-sunken: #08090c;
+  --color-ink: #e8e9ec;
+  --color-ink-soft: #9299a5;
+  --color-hairline: #23272f;
+
+  --color-fd-background: #0b0d11;
+  --color-fd-foreground: #e8e9ec;
+  --color-fd-muted: #161a20;
+  --color-fd-muted-foreground: #9299a5;
+  --color-fd-popover: #14171d;
+  --color-fd-popover-foreground: #e8e9ec;
+  --color-fd-card: #12151a;
+  --color-fd-card-foreground: #e8e9ec;
+  --color-fd-border: #23272f;
+  --color-fd-primary: #e0a34f;
+  --color-fd-primary-foreground: #14100a;
+  --color-fd-secondary: #161a20;
+  --color-fd-secondary-foreground: #e8e9ec;
+  --color-fd-accent: #1c2128;
+  --color-fd-accent-foreground: #e8e9ec;
+  --color-fd-ring: #e0a34f;
+  --color-fd-overlay: rgb(0 0 0 / 0.55);
+
+  --color-fd-info: #7ea8ff;
+  --color-fd-warning: #f89882;
+  --color-fd-error: #f89882;
+  --color-fd-success: #4fd6c2;
+  --color-fd-idea: #e0a34f;
+}
+
+/* =============================================================================
+   TABAN
+   ========================================================================== */
 html {
   scrollbar-gutter: stable;
+  -webkit-text-size-adjust: 100%;
 }
 
 html > body[data-scroll-locked] {
   margin-right: 0px !important;
   --removed-body-scroll-bar-size: 0px !important;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-feature-settings: 'cv05' 1, 'ss03' 1;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--color-brand);
+  color: var(--color-fd-primary-foreground);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+h1,
+h2,
+h3,
+h4,
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.022em;
+  font-optical-sizing: auto;
+}
+
+/* =============================================================================
+   İMZA ÖĞE — blueprint ızgarası + pirinç ufuk
+   Tek bir yerde cesur ol; gerisi disiplinli kalsın.
+   ========================================================================== */
+@utility cw-grid {
+  background-image:
+    linear-gradient(to right, var(--color-hairline) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--color-hairline) 1px, transparent 1px);
+  background-size: 72px 72px;
+  background-position: center;
+  mask-image: radial-gradient(ellipse 78% 62% at 50% 0%, #000 5%, transparent 78%);
+}
+
+@utility cw-glow {
+  background: radial-gradient(ellipse 60% 46% at 50% -8%, var(--color-brand-glow), transparent 70%);
+}
+
+/* Pirinç kılcal çizgi — her yapısal sınırın imzası */
+@utility cw-hairline {
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--color-brand) 22%,
+    var(--color-brand) 78%,
+    transparent
+  );
+  opacity: 0.55;
+}
+
+/* Mono etiket — "ölçüm aleti" dili */
+@utility cw-label {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+
+/* Metni olduğu gibi bırakan etiket varyantı.
+   Sebep: sayfa lang="tr" olduğu için CSS `uppercase`, İngilizce terimleri
+   Türkçe kurallarına göre çeviriyor — "JavaScript" → "JAVASCRİPT".
+   İçeriği veriden gelen (ve Türkçe/İngilizce karışabilen) etiketlerde
+   büyük harfi yazar belirlesin. */
+@utility cw-label-raw {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1;
+  letter-spacing: 0.16em;
+  font-weight: 500;
+}
+
+/* Kademeli giriş — style={{ '--d': '80ms' }} ile gecikme ver */
+@utility cw-rise {
+  animation: var(--animate-rise);
+  animation-delay: var(--d, 0ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* =============================================================================
+   MAKALE GÖVDESİ — yapı anlam taşır
+   ========================================================================== */
+#nd-page .prose,
+.cw-prose {
+  /* Başlıklar: seviye farkı boyuttan çok ağırlık ve kılcal çizgiyle okunur */
+  h2 {
+    font-size: 1.6rem;
+    line-height: 1.25;
+    font-weight: 600;
+    margin-top: 3.25rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--color-fd-border);
+  }
+
+  /* Başlık işareti — fumadocs h2'yi flex yaptığı için satır başında durur;
+     bölüm sınırını üstteki kılcal çizgiyle birlikte iki kez işaretler. */
+  h2::before {
+    content: '';
+    flex: none;
+    width: 28px;
+    height: 2px;
+    margin-inline-end: 0.7rem;
+    background: var(--color-brand);
+    border-radius: 2px;
+  }
+
+  h3 {
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin-top: 2.25rem;
+  }
+
+  p,
+  li {
+    line-height: 1.78;
+  }
+
+  strong {
+    font-weight: 600;
+    color: var(--color-fd-foreground);
+  }
+
+  /* Satır içi kod — "parça" hissi.
+     Yatay dolgu bilerek dar: Türkçe'de kod parçasına ek gelir (`this`'in),
+     geniş dolgu ekle kod arasında görsel bir boşluk açıyor. */
+  :not(pre) > code {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    padding: 0.12em 0.28em;
+    /* Dolgu görsel kutuyu büyütsün ama akışta boşluk açmasın: noktalama ve
+       Türkçe ekler koda bitişik kalsın (`this`'in, `bind` .) */
+    margin-inline: -0.1em;
+    border-radius: 5px;
+    background: var(--color-fd-muted);
+    border: 1px solid var(--color-fd-border);
+    color: var(--color-brand-strong);
+  }
+
+  a:not([data-card]) {
+    color: var(--color-brand);
+    text-decoration-color: color-mix(in oklab, var(--color-brand) 40%, transparent);
+    text-underline-offset: 3px;
+    transition: text-decoration-color 200ms var(--ease-out-soft);
+  }
+
+  a:not([data-card]):hover {
+    text-decoration-color: var(--color-brand);
+  }
+
+  /* Tablolar: satır çizgisi değil, zebra + kılcal */
+  table {
+    font-size: 0.925rem;
+  }
+
+  thead th {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-fd-muted-foreground);
+  }
+}
+
+/* Kutucuk / kart içi gövde.
+   Fumadocs'un typography eklentisi sadece `.prose` altına uğradığı için
+   blok aralıkları ve liste işaretleri burada ayrıca tanımlanıyor. */
+.cw-prose > * + * {
+  margin-top: 0.9em;
+}
+
+.cw-prose ul,
+.cw-prose ol {
+  margin-inline-start: 1.15rem;
+}
+
+.cw-prose ul {
+  list-style: disc;
+}
+
+.cw-prose ol {
+  list-style: decimal;
+}
+
+.cw-prose li + li {
+  margin-top: 0.35em;
+}
+
+.cw-prose li::marker {
+  color: var(--color-fd-muted-foreground);
+}
+
+/* Kutucuk/kart içi tablolar. Fumadocs sarmalayıcıyı (overflow-auto) veriyor
+   ama hücre stillerini sadece `.prose` altında uyguluyor — burada tekrar. */
+.cw-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.cw-prose th,
+.cw-prose td {
+  padding: 0.5rem 0.75rem;
+  text-align: start;
+  vertical-align: top;
+  border-bottom: 1px solid var(--color-fd-border);
+}
+
+.cw-prose thead th {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 500;
+  color: var(--color-fd-muted-foreground);
+  border-bottom-color: var(--color-fd-border);
+}
+
+.cw-prose tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.cw-prose th:first-child,
+.cw-prose td:first-child {
+  padding-inline-start: 0;
+}
+
+/* Okuma sütunu — uzun teknik metinde satır uzunluğu okunabilirliği belirler */
+article#nd-page {
+  max-width: 50rem;
+}
+
+/* Kod bloğu yüksekliği: fumadocs varsayılanı 600px'te kesip ikinci bir kaydırma
+   alanı açıyor. Burada kod dekorasyon değil öğretim materyalinin kendisi —
+   tavanı yükselt, ama patolojik uzunluktaki bloklar için tamamen kaldırma. */
+#nd-page figure .fd-scroll-container,
+.cw-prose figure .fd-scroll-container {
+  max-height: min(1200px, 85vh);
+}
+
+/* Kod blokları — tezgah üstü, koyu her iki temada */
+#nd-page figure:has(> pre),
+.cw-prose figure:has(> pre) {
+  border-color: var(--color-fd-border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* Mono her yerde ligatürsüz: `=>` bir ok değil, iki karakterdir —
+   bir JS başvuru kaynağında bunu gizlemek yanlış olur. */
+code,
+pre,
+kbd,
+samp,
+.font-mono {
+  font-variant-ligatures: none;
+}
+
+.shiki,
+.shiki span {
+  font-family: var(--font-mono) !important;
+}
+
+/* =============================================================================
+   FUMADOCS KABUĞU — sidebar / toc / arama markaya bağlanır
+   ========================================================================== */
+#nd-sidebar a[data-active='true'],
+#nd-tocnav a[data-active='true'],
+#nd-toc a[data-active='true'] {
+  color: var(--color-brand);
+  font-weight: 500;
+}
+
+#nd-subnav,
+#nd-nav {
+  backdrop-filter: blur(12px) saturate(140%);
 }

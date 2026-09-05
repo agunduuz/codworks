@@ -1,0 +1,525 @@
+---
+title: "State & Snapshot"
+description: "State bir değişken değil, o render'a ait bir fotoğraftır: useState'in sırayla nasıl hatırladığı, batching, updater kuyruğu ve en sık yapılan hatalar."
+category: react
+level: baslangic-uzman
+tags: ["useState", "state", "snapshot", "batching", "updater", "closure", "flushSync"]
+order: 2
+duration: 30
+updated: "2026-09-04"
+---
+
+React'te state'i anlamanın önündeki tek engel, ona **değişken** gibi bakmaktır.
+Oysa `const [sayi, setSayi] = useState(0)` satırındaki `sayi` bir değişken değil,
+**o render'a ait sabit bir fotoğraftır**. `setSayi` de o fotoğrafı düzenlemez;
+React'ten yeni bir fotoğraf çekmesini ister.
+
+Bu tek cümle, React'e yeni başlayanların takıldığı üç şeyi birden açıklıyor:
+`setState`'ten hemen sonra `console.log` neden eski değeri yazıyor, aynı satırı
+üç kez çağırınca neden sayaç 1 artıyor, ve `setTimeout` içindeki değer neden
+"donmuş" görünüyor.
+
+<Callout type="child">
+  Polaroid makinesiyle bir fotoğraf çektin. Elindeki kâğıtta ne varsa o —
+  sahnedeki bardağı hareket ettirsen bile fotoğraftaki bardak yerinde kalır.
+  Yeni yeri görmek için **yeni bir fotoğraf** çekmen gerekir.
+
+  React'te her render bir fotoğraf. `setState`, sahneyi değiştirip "bir kare daha
+  çek" demektir. Elindeki eski kâğıt hiçbir zaman güncellenmez.
+</Callout>
+
+## Neden sıradan bir değişken yetmez?
+
+```jsx title="broken.jsx"
+function Sayac() {
+  let sayi = 0; // ✗
+
+  function artir() {
+    sayi = sayi + 1; // değer artıyor ama ekran değişmiyor
+  }
+
+  return <button onClick={artir}>{sayi}</button>;
+}
+```
+
+İki ayrı eksik var:
+
+1. **Yerel değişkenler render'lar arasında yaşamaz.** React bileşeni yeniden
+   çağırdığında fonksiyon sıfırdan çalışır ve `sayi` yine `0` olur.
+2. **Değişkeni değiştirmek render tetiklemez.** React bir şeyin değiştiğinden
+   haberdar olmaz.
+
+`useState` tam olarak bu ikisini birden çözer: değeri render'lar arasında
+**saklar** ve setter çağrıldığında yeni bir render **tetikler**.
+
+```jsx title="fixed.jsx"
+const [sayi, setSayi] = useState(0);
+```
+
+## React hangi state'in hangisi olduğunu nereden biliyor?
+
+İsimden değil — **çağrı sırasından**. React her bileşen için bir dizi tutar ve
+her `useState` çağrısında sıradaki kutuyu verir:
+
+```js title="how-hooks-work.js"
+// Çok basitleştirilmiş iç mekanizma
+let kutular = [];
+let sira = 0;
+
+function useState(ilkDeger) {
+  const kutu = kutular[sira] ?? [ilkDeger, yeniDeger => { kutular[sira][0] = yeniDeger; }];
+  kutular[sira] = kutu;
+  sira++;              // ← her çağrıda bir sonrakine geç
+  return kutu;
+}
+```
+
+<Callout type="expert">
+  Hook kurallarının tamamı bu tek satırdan (`sira++`) çıkar. `useState`'i bir
+  `if` veya döngü içinde çağırırsan, bir render'da 3 kez çağrılıp diğerinde 2 kez
+  çağrılabilir — ve ikinci render'da 1 numaralı kutu artık başka bir state'i
+  gösterir.
+
+  ```jsx
+  // ✗ Koşul false olduğunda sıradaki tüm hook'lar bir kutu kayar
+  if (girisYapildi) {
+    const [ad, setAd] = useState("");
+  }
+  const [tema, setTema] = useState("koyu"); // bazen kutu 1, bazen kutu 0
+  ```
+
+  React'in hook'ları isimle eşleştirmemesinin sebebi, minify edilmiş kodda
+  isimlerin hayatta kalmamasıdır. Sıra ise her koşulda korunur — **sen bozmadığın
+  sürece**. `eslint-plugin-react-hooks` bu yüzden opsiyonel bir stil aracı değil,
+  doğruluk aracıdır.
+</Callout>
+
+### State izole ve özeldir
+
+Aynı bileşeni iki kez render edersen **iki ayrı state** olur:
+
+```jsx title="isolated.jsx"
+<>
+  <Sayac />  {/* kendi sayısı */}
+  <Sayac />  {/* bambaşka bir sayı */}
+</>
+```
+
+State bileşenin içinde değil, [ağaçtaki
+konumunda](/docs/react/render-and-commit) tutulur. Ebeveyn, çocuğun state'ini
+göremez ve değiştiremez; paylaşmak gerekiyorsa state ortak ataya taşınır ve
+aşağı props olarak akar.
+
+## State bir snapshot'tır
+
+React bileşen fonksiyonunu çağırdığında ona **o render için sabit** bir state
+değeri verir. O render içinde üretilen her şey — JSX, olay handler'ları, yerel
+değişkenler — bu değeri kullanır.
+
+Kritik cümle: **bir render içinde state değişkeninin değeri asla değişmez.**
+
+<ExampleCard
+  title="+3 düğmesi neden 1 artırıyor?"
+  level="baslangic"
+  summary="Üç kez setSayi çağrılıyor ama sayaç bir artıyor. Sebep, üçünün de aynı fotoğrafa bakması."
+>
+
+```jsx title="plus-three.jsx"
+function Sayac() {
+  const [sayi, setSayi] = useState(0);
+
+  return (
+    <>
+      <h1>{sayi}</h1>
+      <button
+        onClick={() => {
+          setSayi(sayi + 1);
+          setSayi(sayi + 1);
+          setSayi(sayi + 1);
+        }}
+      >
+        +3
+      </button>
+    </>
+  );
+}
+```
+
+Bu render'da `sayi` `0`. Yani handler aslında şuna eşdeğer:
+
+```jsx
+setSayi(0 + 1); // "1 yap"
+setSayi(0 + 1); // "1 yap"  ← öncekini ezer
+setSayi(0 + 1); // "1 yap"  ← yine ezer
+```
+
+Üçü de aynı şeyi söylüyor. Sonuç: `1`.
+
+</ExampleCard>
+
+Aynı mantık asenkron kodda da geçerli — ve orada çok daha şaşırtıcı görünür:
+
+```jsx title="snapshot-async.jsx"
+<button
+  onClick={() => {
+    setSayi(sayi + 5);
+    setTimeout(() => {
+      alert(sayi); // ?
+    }, 3000);
+  }}
+>
+  +5
+</button>
+```
+
+`sayi` `0` iken tıklarsan, 3 saniye sonra ekranda `5` yazıyor olsa bile
+**alert `0` gösterir**. Çünkü `setTimeout`'a verilen fonksiyon, o render'ın
+fotoğrafını yanında taşır.
+
+<Callout type="warning">
+  Bunun bir başka görünümü, herkesin bir kez yaşadığı şu andır:
+
+  ```jsx
+  function handleClick() {
+    console.log(sayi);   // 0
+    setSayi(sayi + 1);
+    console.log(sayi);   // hâlâ 0 — bug değil, tasarım
+  }
+  ```
+
+  Bir sonraki değeri hemen kullanman gerekiyorsa onu bir değişkene al:
+
+  ```jsx
+  const sonraki = sayi + 1;
+  setSayi(sonraki);
+  console.log(sonraki); // 1
+  ```
+</Callout>
+
+<Callout type="expert">
+  Bu davranış React'e özgü bir sihir değil — düpedüz **closure**'dır.
+  Her render bileşen fonksiyonunun yeni bir çağrısıdır; o çağrıda tanımlanan
+  handler, o çağrının kapsamındaki `sayi`'yı kapatır. Fonksiyon başka bir yere
+  (`setTimeout`, `addEventListener`, bir promise) taşınsa da bu bağ kopmaz.
+
+  Yani React'teki "stale closure" ile düz JavaScript'teki closure aynı
+  mekanizmadır; React sadece onu her render'da yeniden üretir.
+  (Bkz. [Scope & Closure](/docs/javascript/scope-closure))
+</Callout>
+
+## Batching: React neden hemen render etmiyor?
+
+`setState` çağrıldığı anda render başlamaz. React **olay handler'ının tamamı
+bitene kadar bekler**, sonra biriken güncellemeleri tek seferde işler.
+
+<Pipeline
+  title="setState'ten ekrana"
+  steps={[
+    {
+      label: "HANDLER",
+      detail: "setState çağrıları kuyruğa yazılır. Hiçbiri anında render tetiklemez.",
+    },
+    {
+      label: "BATCH",
+      detail: "Handler bitince React kuyruğu işler ve son değeri hesaplar.",
+      tone: "var(--color-tone-frontend)",
+    },
+    {
+      label: "RENDER",
+      detail: "Bileşen yeni state ile bir kez çağrılır — üç setState için bir render.",
+      tone: "var(--color-tone-interview)",
+    },
+    {
+      label: "COMMIT",
+      detail: "Fark kadar DOM işlemi. Sonuç aynıysa hiç.",
+      tone: "var(--color-tone-child)",
+    },
+  ]}
+/>
+
+Sebebi performans değil sadece **tutarlılık**: bir handler'da üç ayrı state
+güncellersen, aralarında "yarısı yeni yarısı eski" bir render görünmez.
+
+<Callout type="expert">
+  Bu davranış React 18'de genişledi. React 17'ye kadar batching **sadece React
+  olay handler'larının içinde** çalışıyordu; `setTimeout`, `Promise.then` veya
+  yerel (native) bir listener içindeki her `setState` ayrı bir render
+  tetikliyordu.
+
+  ```jsx
+  setTimeout(() => {
+    setA(1);
+    setB(2);
+  }, 0);
+  // React 17: iki render · React 18+: tek render
+  ```
+
+  React 18'den beri kaynak fark etmiyor — buna **otomatik batching** deniyor.
+  Eski `unstable_batchedUpdates` sarmalayıcısı hâlâ duruyor ama artık gereksiz.
+
+  Tersini istediğin nadir durumlar için `flushSync` var:
+
+  ```jsx
+  import { flushSync } from "react-dom";
+
+  flushSync(() => setYazdiriliyor(true));
+  // bu satırda DOM güncellenmiş durumda
+  window.print();
+  ```
+
+  Gerçek ihtiyaç dar: state güncellemesinden **hemen sonra** DOM ölçmek,
+  `beforeprint` gibi senkron tarayıcı API'leri, bazı üçüncü taraf kütüphaneler.
+  Bunun dışında `flushSync` batching'i devre dışı bıraktığı için ölçülebilir
+  şekilde yavaşlatır.
+</Callout>
+
+## Updater fonksiyonu: kuyruğa yazmak
+
+Bir handler içinde aynı state'i **birden fazla kez** güncellemen gerekiyorsa,
+setter'a değer değil **fonksiyon** ver:
+
+```jsx title="updater.jsx"
+setSayi((n) => n + 1);
+setSayi((n) => n + 1);
+setSayi((n) => n + 1);
+// Sonuç: 3
+```
+
+Fark şu: değer verdiğinde React kuyruğa "şunu yap" yazar; fonksiyon verdiğinde
+"eldekini şu şekilde dönüştür" yazar. İkincisi bir öncekinin **sonucunu** girdi
+olarak alır.
+
+| Kuyruktaki iş | `n` | Döndürür |
+|---|---|---|
+| `n => n + 1` | 0 | 1 |
+| `n => n + 1` | 1 | 2 |
+| `n => n + 1` | 2 | 3 |
+
+### Değer ve updater karışınca
+
+```jsx title="mixed.jsx"
+setSayi(sayi + 5);      // sayi = 0 → "5 yap"
+setSayi((n) => n + 1);  // "eldekine 1 ekle"
+setSayi(42);            // "42 yap"
+```
+
+| Kuyruktaki iş | `n` | Döndürür |
+|---|---|---|
+| "5 yap" | 0 (kullanılmaz) | 5 |
+| `n => n + 1` | 5 | 6 |
+| "42 yap" | 6 (kullanılmaz) | **42** |
+
+Kural: **düz değer kuyruğu ezer, updater kuyruğa eklenir.** Son düz değer
+öncesindeki her şeyi geçersiz kılar.
+
+<Callout type="interview">
+  "Ne zaman updater kullanmalı?" sorusunun net cevabı: **yeni değer eski değere
+  bağlıysa.**
+
+  ```jsx
+  setAcik(!acik);          // riskli — o render'ın fotoğrafına bakar
+  setAcik((a) => !a);      // güvenli
+
+  setListe([...liste, y]); // riskli
+  setListe((l) => [...l, y]); // güvenli
+  ```
+
+  Riskli olan neden? Çünkü çağrı, o render'ın state'ini okuyor. Aynı handler'da
+  ikinci bir güncelleme varsa, ya da çağrı asenkron bir işten sonra geliyorsa
+  (`await`'ten sonra, bir `setTimeout` içinde), okuduğun fotoğraf çoktan
+  eskimiş olabilir.
+
+  Yeni değer eskisine bağlı **değilse** (`setAd("Anıl")`) düz değer gayet iyidir.
+</Callout>
+
+<Callout type="warning">
+  Updater fonksiyonu **saf olmalı**: sadece yeni state'i hesaplayıp döndürmeli.
+  İçinde başka state güncelleme, istek atma, `console.log` dışında yan etki
+  yapma. `StrictMode` geliştirmede bu fonksiyonu iki kez çağırır ve ikinci
+  sonucu atar — saf değilse bunu hemen fark edersin.
+
+  ```jsx
+  // ✗ Mutasyon: StrictMode'da iki kez eklenir
+  setGorevler((g) => { g.push(yeni); return g; });
+
+  // ✓ Yeni dizi
+  setGorevler((g) => [...g, yeni]);
+  ```
+</Callout>
+
+## Sık yapılan hatalar
+
+### 1. State'i mutasyonla değiştirmek
+
+React değişikliği `Object.is` ile anlar. Aynı nesneyi değiştirip geri verirsen
+React "değişmedi" der ve render etmez.
+
+```jsx title="mutation.jsx"
+// ✗ Ekran güncellenmez
+kullanici.ad = "Elif";
+setKullanici(kullanici);
+
+// ✓ Yeni nesne
+setKullanici({ ...kullanici, ad: "Elif" });
+```
+
+İç içe alanlarda her seviyeyi yenilemen gerekir — sebebi
+[sığ kopyalama kuralı](/docs/javascript/object-copy-array-methods).
+
+### 2. Başlangıç değerini her render'da hesaplamak
+
+```jsx title="lazy-init.jsx"
+// ✗ agirHesap() HER render'da çalışır, sonucu sadece ilkinde kullanılır
+const [veri, setVeri] = useState(agirHesap());
+
+// ✓ Lazy initializer: sadece ilk render'da çağrılır
+const [veri, setVeri] = useState(() => agirHesap());
+```
+
+Aynı sebeple, state'e **fonksiyon** koymak istiyorsan sarmalaman gerekir —
+yoksa React onu initializer sanıp çağırır:
+
+```jsx
+const [fn, setFn] = useState(() => birFonksiyon); // fonksiyonun kendisi saklanır
+```
+
+### 3. Props'u state'e kopyalamak
+
+```jsx title="derived-state.jsx"
+// ✗ prop değişince state güncellenmez, iki kaynak birbirinden kopar
+function Profil({ kullanici }) {
+  const [ad, setAd] = useState(kullanici.ad);
+  ...
+}
+
+// ✓ Türetilebilen şeyi state'te tutma, render sırasında hesapla
+function Profil({ kullanici }) {
+  const gorunenAd = kullanici.ad.toUpperCase();
+  ...
+}
+```
+
+State yalnızca **kullanıcı etkileşimiyle değişen ve props'tan türetilemeyen**
+bilgiler içindir.
+
+### 4. "Too many re-renders"
+
+Neredeyse her zaman render sırasında koşulsuz state güncellemekten çıkar:
+
+```jsx
+// ✗ handleClick render sırasında ÇAĞRILIYOR
+<button onClick={handleClick()}>Tıkla</button>
+
+// ✓ Referansı geçiliyor
+<button onClick={handleClick}>Tıkla</button>
+```
+
+### 5. Render tetiklemesi gerekmeyen değeri state'te tutmak
+
+Bir değer ekranda görünmüyorsa ve değişmesi yeniden çizim gerektirmiyorsa
+(bir zamanlayıcı id'si, önceki scroll konumu, bir sayaç) `useState` değil
+`useRef` kullan. `ref.current` değiştiğinde render olmaz.
+
+## Mülakat soruları
+
+### Soru 1 — kaç render?
+
+```jsx title="q1.jsx"
+function handleClick() {
+  setA(1);
+  setB(2);
+  setC(3);
+}
+```
+
+**Cevap:** Bir. React handler bitene kadar bekler ve üç güncellemeyi tek render'da
+işler. React 18'den beri bu, `setTimeout` veya `.then()` içinde olsa da geçerli.
+
+### Soru 2 — çıktı ne?
+
+```jsx title="q2.jsx"
+const [n, setN] = useState(0);
+
+function handleClick() {
+  setN(n + 1);
+  setN((x) => x + 1);
+  setN(n + 1);
+}
+```
+
+**Cevap:** `1`. Sırayla: "1 yap" → `n => n + 1` kuyruğa eklenir ve `2` üretir →
+son `setN(n + 1)` yine `n`'in **bu render'daki** değerini (`0`) kullanır ve
+kuyruğu ezerek `1` yapar.
+
+### Soru 3 — alert ne gösterir?
+
+```jsx title="q3.jsx"
+const [ad, setAd] = useState("Anıl");
+
+function gonder() {
+  setAd("Elif");
+  setTimeout(() => alert(ad), 2000);
+}
+```
+
+**Cevap:** `"Anıl"`. `setTimeout`'a verilen fonksiyon bu render'ın fotoğrafını
+kapatır; state'in React'teki değeri değişse de bu closure'daki değer değişmez.
+
+### Soru 4 — neden güncellenmiyor?
+
+```jsx title="q4.jsx"
+const [liste, setListe] = useState([1, 2]);
+
+function ekle() {
+  liste.push(3);
+  setListe(liste);
+}
+```
+
+**Cevap:** `push` diziyi yerinde değiştiriyor, yani `setListe`'ye **aynı
+referans** geçiyor. React `Object.is` ile karşılaştırıp "değişmedi" diyor ve
+render etmiyor. Doğrusu `setListe([...liste, 3])`.
+
+### Soru 5 — hangisi doğru?
+
+Bir düğme hızlıca iki kez tıklanabiliyor ve her tıklama sayacı bir artırmalı.
+
+```jsx
+setSayi(sayi + 1);       // A
+setSayi((n) => n + 1);   // B
+```
+
+**Cevap:** B. A, o render'ın fotoğrafına bakar; iki tıklama aynı render'ın
+kuyruğunda birleşirse ikisi de aynı değeri yazar ve bir artış kaybolur. B ise her
+zaman kuyruktaki en son değerden devam eder.
+
+<CheatSheet
+  title="Özet"
+  rows={[
+    { term: "neden useState", meaning: "Yerel değişken render'lar arası yaşamaz ve render tetiklemez." },
+    { term: "hook eşleşmesi", meaning: "İsimle değil ÇAĞRI SIRASIYLA. Koşul/döngü içinde çağırma." },
+    { term: "state izolasyonu", meaning: "Her bileşen örneği kendi state'ine sahiptir; ebeveyn göremez." },
+    { term: "snapshot", meaning: "Bir render içinde state değeri ASLA değişmez." },
+    { term: "console.log eski", meaning: "Bug değil: setState mevcut render'ın değişkenini değiştirmez." },
+    { term: "setTimeout donmuş", meaning: "Closure. Handler, tanımlandığı render'ın fotoğrafını taşır." },
+    { term: "batching", meaning: "Handler bitene kadar beklenir; üç setState → bir render." },
+    { term: "otomatik batching", meaning: "React 18+: setTimeout/promise/native handler'da da geçerli." },
+    { term: "flushSync", meaning: "Batching'i atlar, DOM'u senkron günceller. Nadir ve pahalı." },
+    { term: "updater fn", meaning: "setN(n => n + 1) kuyruğa eklenir; bir öncekinin sonucunu alır." },
+    { term: "düz değer", meaning: "setN(5) kuyruğu EZER. Son düz değer kazanır." },
+    { term: "ne zaman updater", meaning: "Yeni değer eskisine bağlıysa. Değilse düz değer yeterli." },
+    { term: "mutasyon", meaning: "Aynı referansı geri verirsen Object.is 'değişmedi' der, render olmaz." },
+    { term: "lazy init", meaning: "useState(() => agirHesap()) — parantezli hâli her render çalışır." },
+    { term: "türetilmiş state", meaning: "Props'tan hesaplanabileni state'te tutma, render'da hesapla." },
+    { term: "useRef", meaning: "Render tetiklemesi gerekmeyen değerler için. current değişince render olmaz." },
+  ]}
+/>
+
+## Kaynaklar
+
+- [react.dev — State: A Component's Memory](https://react.dev/learn/state-a-components-memory)
+- [react.dev — State as a Snapshot](https://react.dev/learn/state-as-a-snapshot)
+- [react.dev — Queueing a Series of State Updates](https://react.dev/learn/queueing-a-series-of-state-updates)
+- [react.dev — `useState`](https://react.dev/reference/react/useState)
+- [react.dev — `flushSync`](https://react.dev/reference/react-dom/flushSync)
+- [react.dev — React v18.0 (otomatik batching)](https://react.dev/blog/2022/03/29/react-v18)

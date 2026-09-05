@@ -1,5 +1,5 @@
 {
   "title": "React",
   "icon": "Atom",
-  "pages": ["render-and-commit"]
+  "pages": ["render-and-commit", "state-snapshot", "effects"]
 }

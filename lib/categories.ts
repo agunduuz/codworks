@@ -42,7 +42,14 @@ export const categories: Category[] = [
     code: 'RX',
     summary:
       'Render modeli, reconciliation, hook kuralları, state yönetimi ve performans optimizasyonu.',
-    topics: ['Render & Commit', 'Hooks', 'Context', 'Memoization', 'Suspense'],
+    topics: [
+      'Render & Commit',
+      'State & Snapshot',
+      'useEffect',
+      'Hooks',
+      'Context',
+      'Memoization',
+    ],
     tone: 'var(--color-cat-react)',
   },
   {

@@ -1,0 +1,516 @@
+---
+title: "useEffect"
+description: "Effect gerçekte neyi senkronize eder, dependency array'in üç hâli, cleanup ne zaman çalışır — ve en önemlisi: bu effect'e gerçekten gerek var mı?"
+category: react
+level: baslangic-uzman
+tags: ["useEffect", "cleanup", "dependency array", "StrictMode", "data fetching", "useEffectEvent", "Server Components"]
+order: 3
+duration: 34
+updated: "2026-09-05"
+---
+
+`useEffect` React'in en çok yazılan ve en çok yanlış yazılan hook'u. Sebebi tek
+bir yanlış zihinsel modelde toplanıyor: onu **"bileşen yüklendiğinde çalışacak
+kod"** sanmak. Oysa Effect bir yaşam döngüsü kancası değil, **React ağacını dış
+bir sistemle senkronize etme aracıdır.**
+
+Bu ayrım pratikte şuna dönüşüyor: yazdığın effect'lerin çoğuna aslında gerek yok.
+Mülakatta `useEffect`'i "kullanabilen" ile **"gerek var mı?" diye sorabilen**
+aday arasındaki fark burada açılıyor — ve bu makale ikinciye hazırlanmak için
+yazıldı.
+
+<Callout type="child">
+  Odandaki termostat düşün. İşi tek: **odanın sıcaklığını istediğin dereceye
+  eşitlemek.** Sen 22 dersen ısıtır, 18 dersen soğutur, odadan çıkarsan kapatır.
+  Termostat "sabah 8'de bir kere çalış" diye kurulmaz; sürekli olarak *istenen
+  durum* ile *gerçek durumu* eşitler.
+
+  Effect budur: React'in içindeki duruma bakıp dışarıdaki bir şeyi (bağlantı,
+  abonelik, tarayıcı API'si) ona eşitler. "Bir kere çalış" diye düşünürsen yanlış
+  aracı kullanıyorsun demektir.
+</Callout>
+
+## Effect nedir, event'ten farkı ne?
+
+Bir React bileşeninde üç tür kod vardır ve **hangisini yazdığın, "bu kod neden
+çalışmalı?" sorusunun cevabına bağlıdır.**
+
+| Tür | Ne zaman çalışır | Ne için |
+|---|---|---|
+| Render kodu | Her render'da | Props/state'ten JSX hesaplamak. **Saf olmalı.** |
+| Event handler | Belirli bir kullanıcı eylemiyle | Tıklama, yazma, gönderme — o eyleme özgü yan etkiler |
+| Effect | Render tamamlandıktan sonra | Dış bir sistemle senkronizasyon |
+
+Ayrım cümlesi: **bu kod, kullanıcı bir şey yaptığı için mi çalışmalı, yoksa
+bileşen ekranda göründüğü için mi?**
+
+- Mesaj **göndermek** → kullanıcı düğmeye bastı → **event handler**
+- Sohbet sunucusuna **bağlanmak** → bileşen ekranda → hangi sebeple geldiği fark
+  etmez → **effect**
+
+<Callout type="interview">
+  Bu konudaki turnusol sorusu şudur: *"Bir effect yazmadan önce kendine ne
+  sorarsın?"*
+
+  Beklenen cevap: **"Bu kod neden çalışmalı? Cevap 'kullanıcı X yaptı' ise
+  event handler'a; 'bileşen göründü ve dışarıda bir şeyi senkron tutmam gerek'
+  ise effect'e ait. Cevap 'çünkü şu değer değişti' ise muhtemelen hiçbirine ait
+  değil — render sırasında hesaplanmalı."**
+
+  `useEffect`'i "componentDidMount karşılığı" diye tanımlayan aday, sınıf
+  bileşeni zihniyetini taşıdığını göstermiş olur. Effect'in bir **yaşam
+  döngüsü** değil, bir **senkronizasyon** aracı olduğunu söylemek fark yaratır.
+</Callout>
+
+## Dependency array'in üç hâli
+
+```jsx title="deps.jsx"
+useEffect(() => { /* ... */ });          // 1) dizi YOK
+useEffect(() => { /* ... */ }, []);      // 2) BOŞ dizi
+useEffect(() => { /* ... */ }, [a, b]);  // 3) DOLU dizi
+```
+
+| Biçim | Ne zaman çalışır | Tipik kullanım |
+|---|---|---|
+| Dizi yok | **Her commit'ten sonra**, istisnasız | Neredeyse her zaman hatadır |
+| `[]` | Sadece **mount**'ta (ve StrictMode'da bir kez daha) | Bileşen ömrü boyunca değişmeyen abonelikler |
+| `[a, b]` | Mount'ta + `a` veya `b` **değiştiğinde** | Normal durum |
+
+Karşılaştırma `Object.is` ile yapılır — yani referans karşılaştırması.
+
+<Callout type="warning">
+  Boş dizi "bir kere çalışır" **demek değildir**; "hiçbir reaktif değere bağlı
+  değilim" demektir. Effect içinde bir prop veya state okuyup onu diziye
+  yazmazsan, effect o değerin **ilk render'daki fotoğrafını** sonsuza kadar
+  görür — klasik stale closure.
+  (Bkz. [State & Snapshot](/docs/react/state-snapshot))
+
+  ```jsx
+  // ✗ mesaj hep ilk render'daki değeri
+  useEffect(() => {
+    const id = setInterval(() => console.log(mesaj), 1000);
+    return () => clearInterval(id);
+  }, []);
+  ```
+
+  **Linter'ı susturma.** `eslint-disable-next-line react-hooks/exhaustive-deps`
+  yazmak React'e yalan söylemektir. Bağımlılığın gereksiz olduğunu düşünüyorsan
+  bunu *kanıtla*: değeri bileşenin dışına taşı, effect'in içine al, ya da
+  `useEffectEvent` kullan (aşağıda).
+</Callout>
+
+### Obje ve fonksiyon bağımlılıkları
+
+Bu, "effect'im her render'da çalışıyor" şikâyetinin bir numaralı sebebi:
+
+```jsx title="object-dep.jsx"
+function Sohbet({ odaId }) {
+  const ayarlar = { sunucu, odaId }; // ✗ her render'da YENİ nesne
+
+  useEffect(() => {
+    const baglanti = baglan(ayarlar);
+    return () => baglanti.kapat();
+  }, [ayarlar]); // Object.is her seferinde false
+}
+```
+
+Çözüm `useMemo` değil — **nesneyi effect'in içine taşımak**:
+
+```jsx title="object-dep-fix.jsx"
+useEffect(() => {
+  const ayarlar = { sunucu, odaId }; // ✓ effect'e ait
+  const baglanti = baglan(ayarlar);
+  return () => baglanti.kapat();
+}, [sunucu, odaId]); // ✓ sadece primitive bağımlılıklar
+```
+
+## Cleanup ne zaman çalışır?
+
+Effect'ten döndürdüğün fonksiyon **üç durumda** çalışır:
+
+<Pipeline
+  title="Cleanup'ın çalıştığı üç an"
+  steps={[
+    {
+      label: "BAĞIMLILIK DEĞİŞTİ",
+      detail: "Effect yeniden çalışmadan ÖNCE, eski kurulumu sökmek için.",
+    },
+    {
+      label: "UNMOUNT",
+      detail: "Bileşen ağaçtan kalkarken son temizlik.",
+      tone: "var(--color-tone-interview)",
+    },
+    {
+      label: "STRICTMODE",
+      detail: "Geliştirmede, mount'tan hemen sonra: setup → cleanup → setup.",
+      tone: "var(--color-tone-warning)",
+    },
+  ]}
+/>
+
+En sık atlanan birincisidir: cleanup **sadece unmount'ta değil**, her bağımlılık
+değişiminde de çalışır. Bu yüzden zihinsel model "bileşen ölürken temizlik" değil,
+**"her senkronizasyon turunun sonunda kendini geri al"** olmalı.
+
+Altın kural: **cleanup, setup'ı aynalamalı.** Setup bağlantı açtıysa cleanup
+kapatmalı; listener eklediyse kaldırmalı; timer kurduysa iptal etmeli.
+
+<ExampleCard
+  title="Cleanup'lı ve cleanup'sız aynı effect"
+  level="orta"
+  summary="StrictMode'un çift çalıştırması, cleanup'ı unuttuğun anı sana geliştirme sırasında gösterir."
+>
+
+```jsx title="cleanup.jsx"
+// ✗ Her oda değişiminde bir bağlantı daha açılır, hiçbiri kapanmaz
+useEffect(() => {
+  const baglanti = baglan(odaId);
+  baglanti.ac();
+}, [odaId]);
+
+// ✓ Yeni bağlantıdan önce eskisi kapanır
+useEffect(() => {
+  const baglanti = baglan(odaId);
+  baglanti.ac();
+  return () => baglanti.kapat();
+}, [odaId]);
+```
+
+Kullanıcı `oda-1` → `oda-2` → `oda-3` gezinirse:
+
+| | Cleanup'sız | Cleanup'lı |
+|---|---|---|
+| Açık bağlantı | 3 | 1 |
+| Sızıntı | Var | Yok |
+
+</ExampleCard>
+
+### StrictMode neden iki kez çalıştırıyor?
+
+Geliştirmede React bileşeni mount ettikten hemen sonra bilerek söküp yeniden
+mount eder: **setup → cleanup → setup**. Bu bir hata değil, bir stres testidir.
+
+Simüle ettiği şey gerçek: kullanıcı sayfadan çıkıp geri geliyor, sekmeye
+dönüyor, router aynı bileşeni yeniden monte ediyor. Effect'in **iki kez
+çalışmaya dayanıklı** olması gerekir — ve cleanup'ı doğru yazdıysan zaten
+dayanıklıdır.
+
+<Callout type="warning">
+  Çift çalışmayı bir bayrakla (`if (didInit) return`) susturmak, hatayı çözmek
+  değil **saklamaktır**. Doğru soru "nasıl bir kez çalıştırırım" değil,
+  **"iki kez çalışınca ne bozuluyor?"** — bozulan şey genelde eksik cleanup'tır.
+
+  Bayrak kullanmanın meşru olduğu tek yer, gerçekten uygulama ömründe bir kez
+  olması gereken başlatma işleridir (analitik kurulumu, auth token kontrolü) — ve
+  onlar da zaten effect'e değil **modül seviyesine** aittir.
+</Callout>
+
+## Bu effect'e gerçekten gerek var mı?
+
+Asıl bölüm burası. Effect'ler dış sistemlerle senkronizasyon içindir; **React
+içinde kalan hiçbir iş için effect'e gerek yoktur.**
+
+| Yapmak istediğin | Doğru araç |
+|---|---|
+| Props/state'ten bir değer türetmek | **Render sırasında hesapla** |
+| Pahalı bir hesabı önbelleklemek | `useMemo` |
+| Prop değişince tüm state'i sıfırlamak | **`key`** |
+| İki handler'ın ortak mantığı | Sıradan bir fonksiyona çıkar |
+| Kullanıcı eylemine bağlı istek | **Event handler** |
+| Bileşen göründüğü için atılan istek (analitik) | Effect |
+| Dış store'a abone olmak | `useSyncExternalStore` |
+| Uygulama başlangıcı | Modül seviyesi kod |
+| Dış sistemle senkronizasyon | **Effect** |
+
+<ExampleCard
+  title="En sık görülen dört gereksiz effect"
+  level="uzman"
+  summary="Dördü de çalışır — ama fazladan render üretir, kırılgandır ve daha basit bir karşılığı vardır."
+>
+
+```jsx title="unnecessary-effects.jsx"
+// 1) Türetilmiş değeri state'te tutmak
+// ✗ İki render: biri ad değişince, biri tamAd güncellenince
+const [tamAd, setTamAd] = useState("");
+useEffect(() => {
+  setTamAd(ad + " " + soyad);
+}, [ad, soyad]);
+
+// ✓ Sadece hesapla
+const tamAd = ad + " " + soyad;
+
+
+// 2) Prop değişince state sıfırlamak
+// ✗
+useEffect(() => {
+  setYorum("");
+}, [kullaniciId]);
+
+// ✓ key ver, React state'i kendi sıfırlasın
+<Profil kullaniciId={kullaniciId} key={kullaniciId} />
+
+
+// 3) Event mantığını effect'e koymak
+// ✗ Sayfa yenilenince veya remount'ta tekrar bildirim gösterir
+useEffect(() => {
+  if (urun.sepette) bildir(`${urun.ad} sepete eklendi`);
+}, [urun]);
+
+// ✓ Eylemin olduğu yere yaz
+function sepeteEkle() {
+  ekle(urun);
+  bildir(`${urun.ad} sepete eklendi`);
+}
+
+
+// 4) Parent'a haber vermek
+// ✗ Fazladan bir render turu
+useEffect(() => {
+  onDegisti(acik);
+}, [acik, onDegisti]);
+
+// ✓ İkisini aynı handler'da güncelle
+function degistir(yeni) {
+  setAcik(yeni);
+  onDegisti(yeni);
+}
+```
+
+</ExampleCard>
+
+### Hesap zincirleri
+
+En zararlısı bu: her biri diğerini tetikleyen effect'ler. Kod okunmaz hâle
+gelir ve her adım ayrı bir render turu harcar.
+
+```jsx title="chains.jsx"
+// ✗ Kart oynanınca dört ayrı render turu
+useEffect(() => { if (kart.altin) setAltinSayi(s => s + 1); }, [kart]);
+useEffect(() => { if (altinSayi > 3) { setTur(t => t + 1); setAltinSayi(0); } }, [altinSayi]);
+
+// ✓ Hepsini olayın olduğu yerde hesapla
+function kartOyna(yeniKart) {
+  setKart(yeniKart);
+  if (yeniKart.altin) {
+    if (altinSayi < 3) {
+      setAltinSayi(altinSayi + 1);
+    } else {
+      setAltinSayi(0);
+      setTur(tur + 1);
+    }
+  }
+}
+```
+
+## Veri çekme: effect en kötü seçenek
+
+Effect ile fetch etmek çalışır ama üç sorunu vardır: **yarış koşulu**
+(race condition), **istemciye kadar bekleme** (şelale), ve **sunucuda hiç
+çalışmaması**.
+
+Effect'te fetch yapmak zorundaysan yarış koşulunu mutlaka ele al:
+
+```jsx title="fetch-in-effect.jsx"
+useEffect(() => {
+  const kontrol = new AbortController();
+
+  fetch(`/api/kullanici/${id}`, { signal: kontrol.signal })
+    .then((r) => r.json())
+    .then(setVeri)
+    .catch((e) => { if (e.name !== "AbortError") throw e; });
+
+  return () => kontrol.abort(); // ✓ eski istek iptal, sonucu yok sayılır
+}, [id]);
+```
+
+Cleanup olmazsa şu olur: `id` hızlıca `1 → 2` değişir, `1`'in cevabı `2`'den
+sonra gelir ve ekranda **yanlış kullanıcı** görünür.
+
+<Callout type="frontend">
+  Ama asıl cevap şu: **modern bir framework'te ilk veriyi effect'te çekmemelisin.**
+
+  Next.js App Router'da veri sunucuda, bileşen render edilirken çekilir; istemciye
+  hazır HTML gider. Bu üç sorunu birden ortadan kaldırır — yarış koşulu yok
+  (tek geçiş), şelale yok (JS yüklenmesini beklemiyor), sunucuda çalışıyor.
+
+  ```jsx title="app/dashboard/page.tsx"
+  // Server Component — useEffect yok, useState yok
+  export default async function Dashboard() {
+    const veriler = await getReferanslar(); // doğrudan await
+    return <ReferansTablosu veriler={veriler} />;
+  }
+  ```
+
+  **RefTakip'te dashboard'un ilk verisini böyle çekiyorsan doğru yerdesin** —
+  istemcide effect'e ihtiyaç kalmaması bu mimarinin beklenen sonucu, bir şeyi
+  eksik bıraktığının işareti değil.
+
+  Client'ta effect ile veri çekmenin hâlâ meşru olduğu yerler dar ve bellidir:
+  kullanıcı etkileşimine bağlı, sık değişen veriler (canlı arama, sonsuz kaydırma,
+  polling) ve tarayıcıya özgü kaynaklar. Onlarda bile elle `useEffect` yerine
+  TanStack Query gibi bir katman kullanmak, önbellek ve yarış koşulu yönetimini
+  senden alır.
+</Callout>
+
+## `useEffectEvent` (React 19.2)
+
+Klasik ikilem: effect'in **bir bağımlılığa göre yeniden kurulması** gerekiyor
+ama içindeki bir callback'in **en güncel** state'i görmesi lazım.
+
+```jsx title="stale-in-effect.jsx"
+// ✗ tema değişince bağlantı gereksiz yere yeniden kuruluyor
+useEffect(() => {
+  const baglanti = baglan(odaId);
+  baglanti.on("mesaj", () => bildir("Yeni mesaj", tema));
+  return () => baglanti.kapat();
+}, [odaId, tema]); // tema burada olmak zorunda ama yeniden bağlanmayı tetikliyor
+```
+
+<Callout type="expert">
+  `useEffectEvent` bu düğümü çözmek için var (React 19.2'de kararlı). Reaktif
+  olmayan mantığı effect'ten ayırır: içindeki kod **her zaman en güncel** props
+  ve state'i görür, ama fonksiyonun kimliği sabit olduğu için **bağımlılık
+  listesine yazılmaz**.
+
+  ```jsx
+  const mesajGeldi = useEffectEvent(() => {
+    bildir("Yeni mesaj", tema); // tema hep güncel
+  });
+
+  useEffect(() => {
+    const baglanti = baglan(odaId);
+    baglanti.on("mesaj", mesajGeldi);
+    return () => baglanti.kapat();
+  }, [odaId]); // ✓ sadece odaId — tema değişince yeniden bağlanmaz
+  ```
+
+  İki sınırı var: sadece effect'in içinden çağrılabilir (child'a prop olarak
+  geçilemez), ve bileşenin dışına çıkamaz. Prop olarak geçirilecek callback'ler
+  için hâlâ sıradan fonksiyon veya `useCallback` kullanılır.
+
+  Bu hook'tan önceki standart çözüm bir `useRef`'e son değeri yazmaktı;
+  `useEffectEvent` o kalıbın dildeki karşılığı.
+</Callout>
+
+## `useEffect` mi `useLayoutEffect` mi?
+
+| | `useEffect` | `useLayoutEffect` |
+|---|---|---|
+| Ne zaman | Tarayıcı **çizdikten sonra** | Çizimden **önce**, senkron |
+| Kullanım | Veri, abonelik, analitik — görsel olmayan işler | DOM ölçüp konum düzeltme |
+| Riski | Görsel iş yaparsan bir kare titreme (flicker) | Ana iş parçacığını bloklar |
+
+Kural: **varsayılan `useEffect`.** Ölçüm alıp DOM'u düzeltiyorsan ve kullanıcı
+ara kareyi görüyorsa `useLayoutEffect`'e geç.
+(Bkz. [Render & Commit](/docs/react/render-and-commit))
+
+## Mülakat soruları
+
+### Soru 1 — üç hâlin farkı
+
+```jsx
+useEffect(fn);        // A
+useEffect(fn, []);    // B
+useEffect(fn, [x]);   // C
+```
+
+**Cevap:** A her commit'ten sonra çalışır (neredeyse her zaman hatadır).
+B sadece mount'ta — ama "bir kere çalış" değil, **"hiçbir reaktif değere bağlı
+değilim"** anlamına gelir. C mount'ta ve `x` `Object.is`'e göre değiştiğinde.
+
+### Soru 2 — cleanup kaç kez çalışır?
+
+Bileşen mount oluyor, `odaId` iki kez değişiyor, sonra unmount oluyor.
+Cleanup kaç kez çalışır? (Üretimde)
+
+**Cevap:** 3. İki bağımlılık değişiminin her birinde bir kez (yeni effect
+çalışmadan **önce**) ve unmount'ta bir kez. Geliştirmede StrictMode bir tane
+daha ekler.
+
+### Soru 3 — bu effect'e gerek var mı?
+
+```jsx
+const [gorunenler, setGorunenler] = useState([]);
+
+useEffect(() => {
+  setGorunenler(gorevler.filter((g) => !g.bitti));
+}, [gorevler]);
+```
+
+**Cevap:** Hayır. Türetilebilir bir değer state'te tutuluyor; her `gorevler`
+değişiminde iki render oluyor. Doğrusu render sırasında hesaplamak:
+
+```jsx
+const gorunenler = gorevler.filter((g) => !g.bitti);
+```
+
+Filtreleme gerçekten pahalıysa `useMemo`, ama ölçmeden değil.
+
+### Soru 4 — neden sonsuz döngü?
+
+```jsx
+useEffect(() => {
+  setSayi(sayi + 1);
+}, [sayi]);
+```
+
+**Cevap:** Effect state'i değiştiriyor → render → `sayi` değişti → effect yine
+çalışıyor. Sayaç örneğinde doğru çözüm updater'la bağımlılığı kaldırmaktır:
+
+```jsx
+useEffect(() => {
+  const id = setInterval(() => setSayi((s) => s + 1), 1000);
+  return () => clearInterval(id);
+}, []);
+```
+
+### Soru 5 — yanlış veri neden görünüyor?
+
+Kullanıcı hızlıca profil 1 ve profil 2 arasında geçiş yapıyor; bazen 2'yi
+seçmişken 1'in verisi görünüyor.
+
+**Cevap:** Yarış koşulu. `id: 1` isteği `id: 2`'den sonra tamamlanıyor ve
+state'i eziyor. Çözüm cleanup: `AbortController` ile isteği iptal etmek veya bir
+`ignore` bayrağıyla geç gelen cevabı yok saymak.
+
+### Soru 6 — hangisi effect olmalı?
+
+(a) Form gönderilince POST atmak
+(b) Sayfa görüntülenince analitik olayı göndermek
+(c) `firstName` ve `lastName`'den `fullName` üretmek
+
+**Cevap:** Sadece (b). (a) kullanıcı eylemidir → event handler. (c) türetilmiş
+değerdir → render sırasında hesaplanır. (b) bileşenin **görünmesinden** doğar,
+yani effect'e aittir.
+
+<CheatSheet
+  title="Özet"
+  rows={[
+    { term: "effect nedir", meaning: "Yaşam döngüsü kancası değil; dış sistemle SENKRONİZASYON aracı." },
+    { term: "karar sorusu", meaning: "Bu kod neden çalışmalı? Kullanıcı X yaptı → handler. Bileşen göründü → effect." },
+    { term: "dizi yok", meaning: "Her commit'ten sonra çalışır. Neredeyse her zaman hata." },
+    { term: "[] boş dizi", meaning: "'Bir kere' değil, 'hiçbir reaktif değere bağlı değilim' demek." },
+    { term: "[a, b]", meaning: "Mount + a/b Object.is'e göre değişince." },
+    { term: "obje bağımlılığı", meaning: "Her render yeni referans → effect her render çalışır. Objeyi içeri al." },
+    { term: "cleanup ne zaman", meaning: "Bağımlılık değişmeden ÖNCE, unmount'ta, ve StrictMode stres testinde." },
+    { term: "cleanup kuralı", meaning: "Setup'ı aynalamalı: açtıysan kapat, eklediysen kaldır, kurduysan iptal et." },
+    { term: "StrictMode çifti", meaning: "Kullanıcının gidip geri gelmesini simüle eder. Bayrakla susturma." },
+    { term: "türetilmiş değer", meaning: "Effect + state değil, render sırasında hesapla." },
+    { term: "state sıfırlama", meaning: "Prop değişince tüm state sıfırlanacaksa effect değil, key." },
+    { term: "hesap zinciri", meaning: "Birbirini tetikleyen effect'ler yerine tek handler'da hesapla." },
+    { term: "veri çekme", meaning: "Effect en kötü seçenek: yarış koşulu, şelale, sunucuda çalışmaz." },
+    { term: "doğru yer", meaning: "İlk veri Server Component'te await ile. Client'ta gerekiyorsa query katmanı." },
+    { term: "useEffectEvent", meaning: "React 19.2. Reaktif olmayan mantığı ayırır; bağımlılığa yazılmaz." },
+    { term: "useLayoutEffect", meaning: "Çizimden önce senkron. Sadece DOM ölçüp düzeltirken." },
+    { term: "linter", meaning: "Susturma. Bağımlılık gereksizse kanıtla: dışarı taşı, içeri al veya EffectEvent." },
+  ]}
+/>
+
+## Kaynaklar
+
+- [react.dev — Synchronizing with Effects](https://react.dev/learn/synchronizing-with-effects)
+- [react.dev — You Might Not Need an Effect](https://react.dev/learn/you-might-not-need-an-effect)
+- [react.dev — `useEffect`](https://react.dev/reference/react/useEffect)
+- [react.dev — Lifecycle of Reactive Effects](https://react.dev/learn/lifecycle-of-reactive-effects)
+- [react.dev — `useEffectEvent`](https://react.dev/reference/react/useEffectEvent)
+- [react.dev — `useSyncExternalStore`](https://react.dev/reference/react/useSyncExternalStore)

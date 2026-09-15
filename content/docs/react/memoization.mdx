@@ -1,0 +1,414 @@
+---
+title: "Memoization"
+description: "useMemo, useCallback ve memo'yu birbirine bağlayan tek şey: referans eşitliği. Ne zaman zarar verir, Profiler'da neye bakılır ve 2026'da hâlâ gerekli mi?"
+category: react
+level: baslangic-uzman
+tags: ["useMemo", "useCallback", "memo", "performance", "Profiler", "React Compiler", "useDeferredValue"]
+order: 4
+duration: 32
+updated: "2026-09-06"
+---
+
+`useMemo`, `useCallback` ve `memo` genelde üç ayrı araç gibi öğretilir. Oysa
+üçü tek bir problemin üç yüzü: **referans eşitliği**. Üçünü ayrı ayrı bilip
+aralarındaki bağı kuramamak, "memo koydum ama hiçbir şey değişmedi" şikâyetinin
+kaynağıdır.
+
+2026'da bu konunun sorusu da değişti. Artık "nasıl memoize ederim" değil,
+**"hâlâ elle memoize etmeli miyim?"** — React Compiler 1.0 Ekim 2025'te kararlı
+hâle geldiğinden beri cevap çoğu proje için "hayır"a kayıyor. Ama *neyi*
+otomatikleştirdiğini anlamadan derleyiciye güvenmek de ayrı bir sorun.
+
+<Callout type="child">
+  Markete her gidişinde aynı hesabı yapıyorsun: "sepetteki her şeyin toplamı ne
+  kadar?" Memoization, bu hesabı bir kâğıda yazıp cebinde taşımaktır — sepet
+  değişmediyse kâğıda bakarsın, yeniden toplamazsın.
+
+  Ama iki bedeli var: kâğıdı taşımak (bellek) ve her seferinde "sepet değişti mi"
+  diye kontrol etmek (karşılaştırma). Sepette iki kalem varsa kâğıt taşımak
+  toplama yapmaktan daha zahmetlidir.
+</Callout>
+
+## Üçü ne yapar?
+
+| | `useMemo` | `useCallback` | `memo` |
+|---|---|---|---|
+| Nedir | Hook | Hook | Higher-order component |
+| Neyi saklar | Fonksiyonun **sonucunu** | **Fonksiyonun kendisini** | Bileşenin önceki render'ını |
+| Çağırır mı | **Evet**, çağırır ve dönüşü saklar | **Hayır**, sadece saklar | — |
+| İmza | `useMemo(() => hesapla(a), [a])` | `useCallback(fn, [a])` | `memo(Bilesen)` |
+| Neyi engeller | Hesabın yeniden çalışmasını | Yeni fonksiyon referansı üretilmesini | Child'ın yeniden render olmasını |
+| Karşılaştırma | Bağımlılıklar, `Object.is` | Bağımlılıklar, `Object.is` | Tüm props, sığ, `Object.is` |
+| Nerede yazılır | Bileşenin içinde | Bileşenin içinde | Bileşen tanımının dışında |
+
+İkisi arasındaki ilişki tam olarak şudur:
+
+```jsx title="equivalence.jsx"
+useCallback(fn, deps)
+// birebir eşdeğeri:
+useMemo(() => fn, deps)
+```
+
+`useCallback`, fonksiyon saklamak için `useMemo`'nun okunur kısayolu. Başka bir
+farkı yok.
+
+## Referans eşitliği: üçünü birbirine bağlayan şey
+
+React her karşılaştırmayı `Object.is` ile yapar — yani **referansla**. Ve her
+render'da bileşen fonksiyonu baştan çalıştığı için içinde yazılı her nesne,
+dizi ve fonksiyon **yeni bir referans** olur.
+
+```jsx title="new-reference-every-render.jsx"
+function Ebeveyn() {
+  const ayarlar = { tema: "koyu" };        // her render'da YENİ nesne
+  const tikla = () => console.log("hey");  // her render'da YENİ fonksiyon
+  return <Cocuk ayarlar={ayarlar} onTikla={tikla} />;
+}
+```
+
+`Cocuk`'u `memo` ile sarsan bile hiçbir şey değişmez: `memo` props'u sığ
+karşılaştırır, `Object.is({tema:"koyu"}, {tema:"koyu"})` `false` döner.
+
+<ExampleCard
+  title="Kırık zincir ve çalışan zincir"
+  level="orta"
+  summary="memo tek başına işe yaramaz. Referansı üreten tarafla tüketen tarafın birlikte çalışması gerekir."
+>
+
+```jsx title="broken-chain.jsx"
+// ✗ memo var ama boşa gidiyor
+const Liste = memo(function Liste({ ogeler, onSec }) { /* ... */ });
+
+function Sayfa({ veri }) {
+  const [sayi, setSayi] = useState(0);
+
+  const ogeler = veri.filter((o) => o.aktif); // yeni dizi
+  const onSec = (id) => console.log(id);      // yeni fonksiyon
+
+  return (
+    <>
+      <button onClick={() => setSayi(sayi + 1)}>{sayi}</button>
+      <Liste ogeler={ogeler} onSec={onSec} />  {/* her tıklamada render */}
+    </>
+  );
+}
+```
+
+```jsx title="working-chain.jsx"
+// ✓ Üçü birlikte
+function Sayfa({ veri }) {
+  const [sayi, setSayi] = useState(0);
+
+  const ogeler = useMemo(() => veri.filter((o) => o.aktif), [veri]);
+  const onSec = useCallback((id) => console.log(id), []);
+
+  return (
+    <>
+      <button onClick={() => setSayi(sayi + 1)}>{sayi}</button>
+      <Liste ogeler={ogeler} onSec={onSec} />  {/* sayaç değişince render olmaz */}
+    </>
+  );
+}
+```
+
+Kritik nokta: **tek bir prop'u unutmak zinciri komple kırar.** `onSec`'i
+`useCallback`'e almazsan `useMemo` da boşa gider.
+
+</ExampleCard>
+
+<Callout type="interview">
+  "Referans eşitliği memo'yla nasıl ilişkili?" sorusunun tam cevabı bu
+  bağımlılıktır:
+
+  *"`memo` props'ları `Object.is` ile sığ karşılaştırır. Ebeveyn her render'da
+  yeni nesne veya fonksiyon üretiyorsa karşılaştırma hep `false` döner ve `memo`
+  hiçbir şey kazandırmaz — üstüne bir de karşılaştırma maliyeti ekler. Bu yüzden
+  `memo` tek başına değil, `useMemo`/`useCallback` ile **birlikte** anlamlıdır;
+  ve zincirdeki tek bir eksik prop hepsini geçersiz kılar."*
+
+  Buna ekleyebileceğin ikinci cümle daha da ayırt edici: *"Bu kırılganlık,
+  React ekibinin neden önce yapıyı düzeltmeyi — state'i aşağı indirmeyi, JSX'i
+  `children` olarak geçirmeyi — önerdiğini açıklıyor."*
+</Callout>
+
+## `useMemo` ne zaman zarar verir?
+
+Memoization bedava değil. Beş ayrı maliyeti var:
+
+1. **Bellek.** Her memoize edilmiş değer, bileşen ekranda kaldığı sürece
+   saklanır. Uzun listelerde bu ciddi birikir.
+2. **Karşılaştırma.** Her render'da bağımlılık dizisi tek tek `Object.is` ile
+   karşılaştırılır. Ucuz bir hesap için bu karşılaştırma hesabın kendisinden
+   pahalı olabilir.
+3. **İlk render.** `useMemo` ilk render'ı **hiç hızlandırmaz**; sadece sonraki
+   render'larda iş atlatır. Yavaşlığın ilk yüklemede ise yanlış aracı
+   kullanıyorsun.
+4. **Okunabilirlik.** Her satırın etrafındaki sarmalayıcı, kodun ne yaptığını
+   gizler ve bağımlılık listeleri bakım yükü üretir.
+5. **Yanlış bağımlılık = hata.** Bu en ağırı: eksik bağımlılık, performans
+   optimizasyonunu **bug'a** çevirir. Ekranda eski veri görünür.
+
+<Callout type="warning">
+  Üç durumda `useMemo` **saf zarardır**:
+
+  ```jsx
+  // 1) Primitive memoize etmek — sonuç zaten değerle karşılaştırılıyor
+  const toplam = useMemo(() => a + b, [a, b]); // ✗ anlamsız
+
+  // 2) Bağımlılığı her render değişen useMemo — hiç önbellek isabeti yok
+  const x = useMemo(() => hesapla(ayarlar), [ayarlar]); // ayarlar her render yeni
+
+  // 3) Sonucu memo'lu bir bileşene GİTMEYEN değer
+  const liste = useMemo(() => veri.map(f), [veri]);
+  return <ul>{liste.map(...)}</ul>; // ✗ referansı kimse karşılaştırmıyor
+  ```
+
+  Ayrıca: **`useMemo` semantik bir garanti değildir.** React önbelleği bırakma
+  hakkını saklı tutar (geliştirmede dosya düzenlerken, üretimde bileşen ilk
+  mount'ta suspend olduğunda, ileride sanallaştırma gibi özellikler için).
+  Bir değerin *kesinlikle* korunması gerekiyorsa `useMemo` değil `useRef` veya
+  state kullanılır.
+</Callout>
+
+## Önce ölçüm: Profiler'da neye bakarsın?
+
+Memoization kararı sezgiyle değil ölçümle verilir. Sıra şu:
+
+<Pipeline
+  title="Optimizasyon sırası"
+  steps={[
+    {
+      label: "ÖLÇ",
+      detail: "Profiler kaydı al. Üretim build'i ve CPU kısıtlamasıyla.",
+    },
+    {
+      label: "BUL",
+      detail: "Hangi commit yavaş, içinde hangi bileşen geniş? Neden render oldu?",
+      tone: "var(--color-tone-frontend)",
+    },
+    {
+      label: "DÜZELT",
+      detail: "Önce yapı: state'i indir, children geçir. Sonra gerekirse memo.",
+      tone: "var(--color-tone-interview)",
+    },
+    {
+      label: "DOĞRULA",
+      detail: "Yeniden ölç. İyileşme yoksa değişikliği GERİ AL.",
+      tone: "var(--color-tone-child)",
+    },
+  ]}
+/>
+
+React DevTools Profiler'da bakılacak dört şey:
+
+| Ne | Nerede | Ne söyler |
+|---|---|---|
+| **Commit listesi** | Üstteki çubuklar | Hangi güncelleme pahalı. Yüksek ve sarı/kırmızı olanlar |
+| **Flamegraph** | Ana görünüm | Kimin kime bağlı olduğu. **Geniş çubuk = uzun render** |
+| **Ranked chart** | Sekme | Bileşenler süreye göre sıralı. Darboğazı en hızlı burada bulursun |
+| **"Why did this render?"** | Ayarlardan açılır | Prop mu, state mi, ebeveyn mi tetikledi |
+
+İki sayıyı karıştırma:
+
+- **Actual duration** — bu commit'te gerçekten harcanan süre.
+- **Base duration** — hiç memoization olmasaydı harcanacak tahmini süre.
+
+İkisi birbirine yakınsa memoization hiçbir şey kazandırmıyor demektir.
+
+<Callout type="expert">
+  Profiler'dan önce, tek bir hesabın pahalı olup olmadığını `console.time` ile
+  ölçmek daha hızlıdır:
+
+  ```jsx
+  console.time("filtre");
+  const gorunenler = filtrele(gorevler, sekme);
+  console.timeEnd("filtre");
+  ```
+
+  React ekibinin verdiği pratik eşik: **1 ms ve üzeri** ise memoize etmeye
+  değebilir. Altındaysa neredeyse kesinlikle değmez.
+
+  İki ölçüm hatası çok yaygın:
+
+  1. **Geliştirme build'inde ölçmek.** Geliştirme modu bilerek yavaştır
+     (`StrictMode` çift çağrı, uyarılar, kaynak haritaları). Karar üretim
+     build'iyle verilir.
+  2. **Hızlı makinede ölçmek.** DevTools'un CPU throttling ayarını 4x–6x
+     yavaşlatmaya alarak ölç; kullanıcıların çoğu senin makinende değil.
+</Callout>
+
+## 2026: hâlâ elle memoize etmeli miyim?
+
+**React Compiler 1.0** Ekim 2025'te kararlı yayınlandı. Build zamanında bileşen
+ağacını analiz edip memoizasyonu **tek tek JSX ifadesi seviyesinde** ekliyor —
+yani insanın yazabileceğinden daha ince taneli. Next.js gibi kurulumlarda
+varsayılan olarak açık geliyor.
+
+<Callout type="frontend">
+  **Rakam sorusuna dürüst cevap:** "2026'da geliştiricilerin yüzde kaçı `useMemo`
+  kullanıyor" sorusunun güvenilir bir anket cevabı **yok**. State of React 2025
+  anketi (3.760 katılımcı, Kasım 2025 – Ocak 2026) hook bazında kullanım oranı
+  ölçmüyor. Elimizdeki somut veriler şunlar:
+
+  - Katılımcıların **%62'si** React Compiler'a olumlu/hevesli.
+  - React 19, çıkışından aylar sonra **%48,4** günlük kullanıma ulaşmış.
+  - Ankette **memoizasyon, tekrar eden bir zorluk başlığı** olarak öne çıkıyor:
+    "ne zaman `useMemo`, ne zaman `useCallback`, ne zaman `memo`" sorusu
+    zihinsel yük olarak işaretlenmiş.
+
+  Yani sayısal bir oran veremem; ama yönün ne olduğu açık — derleyici bu üç
+  aracı elle yazma ihtiyacını ortadan kaldırmak için var ve ekosistem oraya
+  gidiyor. Sana bir yüzde söyleyen kaynak görürsen kaynağını sorgula.
+</Callout>
+
+Derleyici açıkken durum:
+
+| Durum | Elle memoization |
+|---|---|
+| Sıradan hesaplar, callback'ler, JSX | **Gereksiz** — derleyici hallediyor |
+| Gerçekten pahalı hesap (ölçülmüş) | Genelde gereksiz, ölçüp karar ver |
+| Saflık kuralını bozan bileşen | Derleyici **atlar** — elle gerekebilir |
+| Derleyici kullanmayan proje | Gerekli, ama ölçtükten sonra |
+| Üçüncü taraf kütüphane sınırı | Duruma göre |
+
+Son satırın altını çizmek gerek: **derleyicinin çalışabilmesi bileşenlerinin saf
+olmasına bağlı.** Render sırasında props mutasyonu yapan, dışarıdaki bir
+değişkeni değiştiren bir bileşeni derleyici güvenli bulmaz ve optimize etmeden
+geçer. Yani derleyici çağında bile `memo` bilgisi gerekli — ne olduğunu ve
+*neden olmadığını* anlamak için.
+
+## `useMemo` yerine ne kullanılabilir?
+
+Sıra önemli: aşağıdakiler yukarıdan aşağıya doğru denenir.
+
+| Alternatif | Ne zaman | Neden daha iyi |
+|---|---|---|
+| **Yapıyı düzeltmek** | Ebeveyn state'i çocuğu gereksiz render ediyor | State'i kullanan en küçük bileşene indir — memo'ya gerek kalmaz |
+| **`children` olarak geçirmek** | Pahalı alt ağaç, değişmeyen içerik | Element referansı sabit kalır, React alt ağacı atlar |
+| **Hesabı bileşen dışına almak** | Hesap props/state'e bağlı değil | Modül seviyesinde bir kez çalışır, hook bile gerekmez |
+| **`key` ile sıfırlama** | Prop değişince state sıfırlanacak | Effect + memo yerine tek satır |
+| **`useDeferredValue`** | Ağır liste, hızlı yazılan input | Hesabı ucuzlatmaz; **önceliğini düşürür**, input akıcı kalır |
+| **Sanallaştırma** | Binlerce satırlık liste | Memoization 10.000 satırı hızlandırmaz; 20 satır render etmek hızlandırır |
+| **React Compiler** | Genel durum | İfade seviyesinde, elle yazımdan daha ince taneli |
+
+`useDeferredValue` özellikle az bilinen ama doğru cevap olduğu bir durum var:
+
+```jsx title="deferred.jsx"
+function Arama() {
+  const [sorgu, setSorgu] = useState("");
+  const gecikmisSorgu = useDeferredValue(sorgu);
+
+  return (
+    <>
+      <input value={sorgu} onChange={(e) => setSorgu(e.target.value)} />
+      {/* Liste eski sorguyla render olmaya devam eder, input takılmaz */}
+      <Sonuclar sorgu={gecikmisSorgu} />
+    </>
+  );
+}
+```
+
+Burada sorun hesabın *pahalı* olması değil, **kullanıcıyı bekletmesi**.
+`useMemo` hesabı atlatır; `useDeferredValue` hesabı arka plana atar. Farklı
+problemler.
+
+## Mülakat soruları
+
+### Soru 1 — bu memo neden işe yaramıyor?
+
+```jsx
+const Kart = memo(function Kart({ veri }) { /* ... */ });
+
+function Sayfa() {
+  const [n, setN] = useState(0);
+  return <Kart veri={{ ad: "Anıl" }} />;
+}
+```
+
+**Cevap:** `{ ad: "Anıl" }` her render'da yeni bir nesne. `memo` props'u
+`Object.is` ile karşılaştırdığı için hep `false` döner. Nesneyi bileşen dışına
+almak (sabitse), `useMemo` ile sarmak veya primitive geçmek (`ad="Anıl"`) gerekir.
+
+### Soru 2 — hangisi doğru?
+
+```jsx
+const f = useCallback(() => hesapla(a), [a]);   // A
+const f = useMemo(() => () => hesapla(a), [a]); // B
+const f = useMemo(() => hesapla(a), [a]);       // C
+```
+
+**Cevap:** A ve B **birebir aynı** (fonksiyonu saklar). C farklı — fonksiyonu
+**çağırır** ve sonucunu saklar. Fonksiyon geçirecekseniz A, değer geçirecekseniz C.
+
+### Soru 3 — `useMemo` ilk render'ı hızlandırır mı?
+
+**Cevap:** Hayır. Hesap ilk render'da mutlaka bir kez çalışır; `useMemo` sadece
+**sonraki** render'larda tekrarını atlatır. İlk yükleme yavaşsa çözüm kod bölme,
+sunucuda render veya daha az iş — memoization değil.
+
+### Soru 4 — bu `useCallback` neden boşuna?
+
+```jsx
+const ekle = useCallback((yeni) => {
+  setGorevler([...gorevler, yeni]);
+}, [gorevler]);
+```
+
+**Cevap:** `gorevler` her eklemede değiştiği için fonksiyon da her seferinde
+yeniden üretiliyor — memoization hiç isabet etmiyor. Updater biçimi bağımlılığı
+tamamen kaldırır:
+
+```jsx
+const ekle = useCallback((yeni) => {
+  setGorevler((g) => [...g, yeni]);
+}, []);
+```
+
+### Soru 5 — Profiler'da ilk neye bakarsın?
+
+**Cevap:** Commit listesine — hangi güncellemenin pahalı olduğunu bulmak için.
+Sonra o commit'in **ranked chart**'ında en uzun süren bileşene, ardından "why
+did this render?" ile neden render olduğuna. Ölçüm üretim build'inde ve CPU
+kısıtlamasıyla yapılır; aksi hâlde geliştirme modunun gürültüsünü ölçmüş olursun.
+
+### Soru 6 — ne zaman `useMemo` yerine `useDeferredValue`?
+
+**Cevap:** Sorun hesabın tekrarı değil, kullanıcıyı bekletmesi olduğunda. Ağır
+bir listeyi filtreleyen bir arama kutusunda `useMemo` her tuşta yine hesaplar ve
+input takılır; `useDeferredValue` listeyi düşük öncelikli hâle getirir, input
+akıcı kalır.
+
+<CheatSheet
+  title="Özet"
+  rows={[
+    { term: "ortak payda", meaning: "Üçü de Object.is ile REFERANS karşılaştırır." },
+    { term: "useMemo", meaning: "Fonksiyonu ÇAĞIRIR, sonucunu saklar." },
+    { term: "useCallback", meaning: "Fonksiyonu ÇAĞIRMAZ, kendisini saklar. useMemo(() => fn, deps) ile aynı." },
+    { term: "memo", meaning: "Props sığ eşitse child render'ını atlar." },
+    { term: "kırık zincir", meaning: "Tek bir obje/fonksiyon prop'u unutmak memo'yu tamamen geçersiz kılar." },
+    { term: "zarar 1", meaning: "Primitive memoize etmek — karşılaştırma hesaptan pahalı." },
+    { term: "zarar 2", meaning: "Bağımlılığı her render değişen useMemo — hiç isabet yok, saf maliyet." },
+    { term: "zarar 3", meaning: "Eksik bağımlılık optimizasyonu BUG'a çevirir." },
+    { term: "ilk render", meaning: "useMemo ilk render'ı hızlandırmaz, sadece tekrarı atlatır." },
+    { term: "garanti değil", meaning: "React önbelleği bırakabilir. Kesinlik gerekiyorsa useRef/state." },
+    { term: "ölçüm eşiği", meaning: "console.time ile 1 ms ve üzeriyse düşün; altındaysa uğraşma." },
+    { term: "Profiler sırası", meaning: "Commit listesi → ranked chart → why did this render." },
+    { term: "actual vs base", meaning: "İkisi yakınsa memoization hiçbir şey kazandırmıyor." },
+    { term: "ölçüm hatası", meaning: "Geliştirme build'inde veya hızlı makinede ölçmek. Üretim + CPU throttle." },
+    { term: "React Compiler 1.0", meaning: "Ekim 2025. İfade seviyesinde otomatik. Saf olmayan bileşeni atlar." },
+    { term: "2026 kullanım oranı", meaning: "Hook bazında güvenilir anket verisi YOK. Compiler'a olumlu bakan %62." },
+    { term: "önce dene", meaning: "Yapıyı düzelt → children geç → dışarı taşı → key → useDeferredValue." },
+    { term: "useDeferredValue", meaning: "Hesabı ucuzlatmaz, önceliğini düşürür. Farklı problem." },
+    { term: "uzun liste", meaning: "Memoization değil sanallaştırma. 10.000 satırı 20 satıra indir." },
+  ]}
+/>
+
+## Kaynaklar
+
+- [react.dev — `useMemo`](https://react.dev/reference/react/useMemo)
+- [react.dev — `useCallback`](https://react.dev/reference/react/useCallback)
+- [react.dev — `memo`](https://react.dev/reference/react/memo)
+- [react.dev — `useDeferredValue`](https://react.dev/reference/react/useDeferredValue)
+- [react.dev — React Compiler](https://react.dev/learn/react-compiler)
+- [react.dev — React Developer Tools](https://react.dev/learn/react-developer-tools)
+- [State of React 2025](https://2025.stateofreact.com/)

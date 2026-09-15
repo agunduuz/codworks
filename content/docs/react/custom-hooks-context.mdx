@@ -1,0 +1,528 @@
+---
+title: "Custom Hook'lar & Context"
+description: "Mantığı paylaşmak ile veriyi paylaşmak ayrı işler: use önekinin neden zorunlu olduğu, context güncellenince kimin render olduğu ve context'in yanlış araç olduğu durumlar."
+category: react
+level: baslangic-uzman
+tags: ["custom hooks", "context", "prop drilling", "useContext", "useSyncExternalStore", "useDebounce", "useLocalStorage"]
+order: 5
+duration: 32
+updated: "2026-09-07"
+---
+
+Custom hook'lar ve context aynı cümlede geçer ama farklı şeyleri paylaşırlar ve
+karıştırılmaları pahalıya patlar:
+
+- **Custom hook, mantığı paylaşır.** Her çağrı kendi state'ini alır. İki bileşen
+  aynı hook'u kullanıyorsa **iki ayrı state** olur.
+- **Context, veriyi paylaşır.** Ağacın farklı yerlerindeki bileşenler **aynı**
+  değeri okur.
+
+"Prop drilling'i nasıl çözerim" sorusunun cevabı çoğu zaman context değildir —
+ve context'in ne zaman yanlış araç olduğunu bilmek, onu kullanmayı bilmekten
+daha ayırt edicidir.
+
+<Callout type="child">
+  Custom hook bir **tarif**tir: aynı keki iki kişi yapabilir ama ortaya iki ayrı
+  kek çıkar. Tarifi paylaşıyorsun, keki değil.
+
+  Context ise evin ortasındaki **ısıtıcıdır**: odalar arasından geçer, kimse
+  elden ele taşımaz, ve sıcaklık değişince o ısıtıcının etkisindeki **herkes**
+  aynı anda hisseder.
+</Callout>
+
+## Custom hook ile normal fonksiyon farkı
+
+Custom hook, içinde başka hook çağıran bir fonksiyondur. Tek ayırt edici
+özelliği budur — ve `use` öneki de tam olarak bunu ilan eder.
+
+| | Custom hook | Normal fonksiyon |
+|---|---|---|
+| İçinde hook çağırır mı | **Evet** | Hayır |
+| Adı | `use` + büyük harf ile başlar | İstediğin gibi |
+| Koşullu çağrılabilir mi | **Hayır** — hook kuralları | Evet |
+| Döngüde çağrılabilir mi | **Hayır** | Evet |
+| Her çağrı | Kendi state'ini alır | Durum tutmaz |
+| Linter | `use` görünce hook kurallarını uygular | Uygulamaz |
+
+```jsx title="use-prefix.jsx"
+// ✗ İçinde hook yok ama use ile başlıyor — yanıltıcı, gereksiz kısıt
+function useSirali(ogeler) {
+  return ogeler.toSorted();
+}
+
+// ✓ Sıradan fonksiyon: koşullu çağrılabilir
+function sirala(ogeler) {
+  return ogeler.toSorted();
+}
+
+function Liste({ ogeler, siralansin }) {
+  const gosterilecek = siralansin ? sirala(ogeler) : ogeler; // ✓ serbest
+}
+```
+
+Tersi de geçerli: hook çağıran bir fonksiyonun adı `use` ile başlamazsa linter
+hook kurallarını uygulayamaz ve sessiz hatalar üretebilirsin.
+
+### En kritik nokta: state değil, mantık paylaşılır
+
+<ExampleCard
+  title="Aynı hook, iki bağımsız state"
+  level="baslangic"
+  summary="Custom hook'u iki kez çağırmak veriyi paylaşmaz — her çağrı sıfırdan kendi state'ini kurar."
+>
+
+```jsx title="independent-state.jsx"
+function useFormInput(ilkDeger) {
+  const [deger, setDeger] = useState(ilkDeger);
+  return {
+    value: deger,
+    onChange: (e) => setDeger(e.target.value),
+  };
+}
+
+function Form() {
+  const ad = useFormInput("Anıl");     // kendi state'i
+  const soyad = useFormInput("Gündüz"); // BAŞKA bir state
+
+  return (
+    <>
+      <input {...ad} />
+      <input {...soyad} />
+      <p>{ad.value} {soyad.value}</p>
+    </>
+  );
+}
+```
+
+İki input birbirinden tamamen bağımsız. Aynı **veriyi** paylaşmalarını
+istiyorsan custom hook değil, ortak bir ata (lifting state) veya context
+gerekir.
+
+</ExampleCard>
+
+## Prop drilling ve context
+
+Prop drilling: veriyi, ona **ihtiyacı olmayan** ara bileşenlerden geçirerek
+derindeki tüketiciye taşımak.
+
+Context üç adımda kurulur — ve React 19'dan beri `.Provider` yazmaya gerek yok:
+
+```jsx title="context-3-steps.jsx"
+// 1) Oluştur
+export const TemaContext = createContext("acik");
+
+// 2) Sağla — React 19: <TemaContext> yeterli, <TemaContext.Provider> değil
+function Uygulama() {
+  return (
+    <TemaContext value="koyu">
+      <Sayfa />
+    </TemaContext>
+  );
+}
+
+// 3) Oku — aradaki bileşenler hiçbir şey taşımaz
+function Dugme() {
+  const tema = useContext(TemaContext);
+  return <button className={tema}>Tıkla</button>;
+}
+```
+
+Bir bileşen **kendi üstündeki en yakın** provider'ı okur. Hiç provider yoksa
+`createContext`'e verilen varsayılan devreye girer.
+
+<Callout type="expert">
+  İki ince ayrıntı:
+
+  1. **Bir bileşen kendi döndürdüğü provider'ı okuyamaz.** `useContext` çağrısı,
+     aynı bileşende render edilen provider'dan etkilenmez — provider **yukarıda**
+     olmak zorundadır.
+  2. **Varsayılan değer sadece provider hiç yokken kullanılır.** `value` olarak
+     açıkça `undefined` geçen bir provider varsa tüketici `undefined` alır,
+     varsayılanı değil.
+
+  React 19 ayrıca `use(TemaContext)` ile context'i **koşullu** okumaya izin
+  veriyor — `useContext`'ten farklı olarak `if` içinde çağrılabiliyor.
+</Callout>
+
+## Context güncellenince kimler render olur?
+
+Kısa cevap: **o provider'ın altındaki, o context'i okuyan tüm bileşenler.**
+Değer `Object.is` ile karşılaştırılır; farklıysa tüketicilerin hepsi yeniden
+render olur.
+
+<Callout type="warning">
+  **`memo` bunu durdurmaz.** `memo` yalnızca props karşılaştırır; context ayrı
+  bir kanaldır. `memo` ile sarılmış bir bileşen bile okuduğu context değişince
+  yeniden render olur.
+
+  Bu, "her şeyi `memo` ile sardım ama hâlâ render oluyor" şikâyetinin en sık
+  sebebidir.
+</Callout>
+
+Asıl tuzak burada: provider'ın `value`'su her render'da yeni bir nesneyse,
+context **hiç değişmemiş olsa bile** tüm tüketiciler render olur.
+
+<ExampleCard
+  title="Kırık provider ve düzeltilmiş hâli"
+  level="uzman"
+  summary="Value'yu inline nesne olarak vermek, provider'ın her render'ında tüm tüketicileri yeniden render eder."
+>
+
+```jsx title="context-value.jsx"
+// ✗ Her render'da yeni nesne → tüm tüketiciler render olur
+function AuthProvider({ children }) {
+  const [kullanici, setKullanici] = useState(null);
+
+  return (
+    <AuthContext value={{ kullanici, girisYap: (u) => setKullanici(u) }}>
+      {children}
+    </AuthContext>
+  );
+}
+
+// ✓ Referans, gerçekten değiştiğinde değişir
+function AuthProvider({ children }) {
+  const [kullanici, setKullanici] = useState(null);
+
+  const girisYap = useCallback((u) => setKullanici(u), []);
+
+  const deger = useMemo(
+    () => ({ kullanici, girisYap }),
+    [kullanici, girisYap],
+  );
+
+  return <AuthContext value={deger}>{children}</AuthContext>;
+}
+```
+
+Artık `AuthProvider` başka bir sebeple render olsa bile, `kullanici`
+değişmedikçe tüketiciler render olmaz.
+
+</ExampleCard>
+
+Bu, [Memoization](/docs/react/memoization) makalesindeki referans eşitliği
+kuralının context'e uygulanmış hâli — ve `useMemo`'nun gerçekten gerekli olduğu
+sayılı yerlerden biri.
+
+## Context ne zaman yanlış araçtır?
+
+### Önce: context'e hiç gerek var mı?
+
+React ekibinin sırası net — context son çare:
+
+1. **Props'u açıkça geçir.** Bir iki seviyeyse prop drilling bir sorun değil,
+   *okunabilirlik*tir. Veri akışını görünür tutar.
+2. **Bileşeni çıkar ve JSX'i `children` olarak geçir.** Çoğu prop drilling
+   vakası aslında bir kompozisyon problemidir:
+
+```jsx title="composition-instead.jsx"
+// ✗ Layout, posts'a ihtiyaç duymuyor ama taşımak zorunda
+<Layout posts={posts} />
+
+// ✓ Layout hiçbir şey bilmiyor
+<Layout>
+  <Gonderiler posts={posts} />
+</Layout>
+```
+
+### Sonra: context yanlış araç olduğunda
+
+| Durum | Neden yanlış | Ne kullanmalı |
+|---|---|---|
+| **Sık değişen değer** (mouse konumu, form input'u, animasyon karesi) | Her değişimde tüm tüketiciler render olur | State'i yerelde tut, aşağı indir |
+| **Büyük tek nesne** (tüm uygulama state'i) | Bir alan değişince ilgisiz tüketiciler de render olur | Context'i böl veya dış store |
+| **Sadece bir alanı okuyan çok tüketici** | Context'in **seçici okuma mekanizması yok** | Selector destekli dış store |
+| **Tarayıcı/dış sistem verisi** (online durumu, medya sorgusu) | Context'e taşımak fazladan katman | `useSyncExternalStore` |
+| **Sunucudan gelen veri** | İstemciye taşımak şelale üretir | Server Component'te çek, props ile geçir |
+
+<Callout type="expert">
+  Üçüncü satır en önemlisi ve adı **"seçicilik açığı" (selectivity gap)**:
+  context'te bir değer okumanın "sadece şu alanı izle" hâli yoktur. Tüketici
+  `deger.a`'yı okusa bile `deger.b` değiştiğinde render olur, çünkü değişen şey
+  nesnenin referansıdır.
+
+  Context'i bölmek (`UserContext`, `ThemeContext`, `SettingsContext`) bunu
+  **domainler arasında** çözer ama **domain içinde** çözmez. `UserContext`
+  içindeki `user.name`'i okuyan bileşen, `user.lastSeen` her güncellendiğinde
+  yine render olur.
+
+  Zustand, Jotai, Redux gibi kütüphaneler bu yüzden hâlâ var: bir **selector**
+  ile abone olursun ve yalnızca seçtiğin dilim değişince render olursun. React
+  19 context'i iyileştirdi ama seçici abonelik hâlâ eklemedi — bu, kütüphane ile
+  arasındaki temel fark.
+</Callout>
+
+## Pratik: iki custom hook
+
+### `useDebounce`
+
+Kullanıcı yazmayı bırakana kadar bekleyip son değeri veren hook. Cleanup'ın
+neden şart olduğunu net gösterir.
+
+<ExampleCard
+  title="useDebounce"
+  level="orta"
+  summary="Her yeni değerde önceki zamanlayıcı iptal edilir; sadece son bekleme tamamlanır."
+>
+
+```jsx title="use-debounce.js"
+import { useEffect, useState } from "react";
+
+export function useDebounce(deger, gecikme = 300) {
+  const [gecikmisDeger, setGecikmisDeger] = useState(deger);
+
+  useEffect(() => {
+    const id = setTimeout(() => setGecikmisDeger(deger), gecikme);
+
+    // Kritik: yeni değer gelince önceki zamanlayıcıyı iptal et
+    return () => clearTimeout(id);
+  }, [deger, gecikme]);
+
+  return gecikmisDeger;
+}
+```
+
+```jsx title="usage.jsx"
+function Arama() {
+  const [sorgu, setSorgu] = useState("");
+  const gecikmisSorgu = useDebounce(sorgu, 400);
+
+  useEffect(() => {
+    if (!gecikmisSorgu) return;
+    ara(gecikmisSorgu); // her tuşta değil, yazma durunca
+  }, [gecikmisSorgu]);
+
+  return <input value={sorgu} onChange={(e) => setSorgu(e.target.value)} />;
+}
+```
+
+`clearTimeout` olmasaydı her tuş vuruşu için ayrı bir zamanlayıcı kurulur ve
+hepsi sırayla ateşlenirdi — debounce hiç çalışmazdı.
+
+</ExampleCard>
+
+<Callout type="frontend">
+  **Ağ isteği yerine sadece ağır bir render'ı geciktiriyorsan `useDebounce`
+  yazma** — React'in kendi aracı var:
+
+  ```jsx
+  const gecikmisSorgu = useDeferredValue(sorgu);
+  ```
+
+  Fark: `useDebounce` sabit bir süre bekler; `useDeferredValue` süreye değil
+  **önceliğe** bakar — cihaz hızlıysa neredeyse anında, yavaşsa daha geç günceller.
+  Ama ağ isteğini kısmak istiyorsan `useDeferredValue` bunu yapmaz; orada
+  debounce doğru araçtır.
+  (Bkz. [Memoization](/docs/react/memoization))
+</Callout>
+
+### `useLocalStorage`
+
+Yaygın olarak yazılan naif sürüm üç yerde kırılır:
+
+```jsx title="use-localstorage-naive.js"
+// ✗ Naif sürüm
+export function useLocalStorage(anahtar, ilkDeger) {
+  const [deger, setDeger] = useState(() => {
+    const ham = localStorage.getItem(anahtar); // ✗ sunucuda patlar
+    return ham ? JSON.parse(ham) : ilkDeger;
+  });
+
+  useEffect(() => {
+    localStorage.setItem(anahtar, JSON.stringify(deger));
+  }, [anahtar, deger]);
+
+  return [deger, setDeger];
+}
+```
+
+Sorunlar: **(1)** SSR'da `localStorage` yok, `ReferenceError`. **(2)** Aynı
+anahtarı kullanan iki bileşen birbirinden habersiz — biri yazınca diğeri
+güncellenmez. **(3)** Başka sekmede yapılan değişikliği görmez.
+
+<ExampleCard
+  title="useSyncExternalStore ile doğru sürüm"
+  level="uzman"
+  summary="localStorage React'in dışında bir store. Doğru araç useState değil, useSyncExternalStore."
+>
+
+```jsx title="use-localstorage.js"
+import { useCallback, useMemo, useSyncExternalStore } from "react";
+
+// Modül seviyesi: subscribe KARARLI olmalı, yoksa React her render yeniden abone olur
+const dinleyiciler = new Set();
+
+function abone(callback) {
+  dinleyiciler.add(callback);
+  window.addEventListener("storage", callback); // diğer sekmeler
+  return () => {
+    dinleyiciler.delete(callback);
+    window.removeEventListener("storage", callback);
+  };
+}
+
+function yayinla() {
+  dinleyiciler.forEach((cb) => cb()); // aynı sekmedeki diğer bileşenler
+}
+
+export function useLocalStorage(anahtar, ilkDeger) {
+  // getSnapshot HAM STRING döndürür — string Object.is ile değerle
+  // karşılaştığı için "cached" kuralını doğal olarak sağlar.
+  const oku = useCallback(() => localStorage.getItem(anahtar), [anahtar]);
+  const sunucudaOku = useCallback(() => null, []);
+
+  const ham = useSyncExternalStore(abone, oku, sunucudaOku);
+
+  const deger = useMemo(
+    () => (ham === null ? ilkDeger : JSON.parse(ham)),
+    [ham, ilkDeger],
+  );
+
+  const yaz = useCallback(
+    (yeni) => {
+      localStorage.setItem(anahtar, JSON.stringify(yeni));
+      yayinla();
+    },
+    [anahtar],
+  );
+
+  return [deger, yaz];
+}
+```
+
+Üç sorun da çözüldü: sunucuda `sunucudaOku` devreye girer, aynı sekmedeki
+bileşenler `yayinla` ile senkronlanır, diğer sekmeler `storage` olayıyla.
+
+**Dikkat:** `ilkDeger` olarak inline bir nesne geçersen (`useLocalStorage("k", {})`)
+her render'da yeni referans olur ve `useMemo` isabet etmez. Sabiti bileşen
+dışında tanımla.
+
+</ExampleCard>
+
+<Callout type="warning">
+  `useSyncExternalStore`'un iki kuralı ihlal edilince hata verir:
+
+  1. **`getSnapshot` önbelleklenmiş değer döndürmeli.** Her çağrıda yeni nesne
+     döndürürsen `The result of getSnapshot should be cached` hatası ve sonsuz
+     döngü alırsın. Yukarıda ham string döndürüp ayrıştırmayı `useMemo`'ya
+     bırakmamızın sebebi bu.
+  2. **`subscribe` kararlı olmalı.** Bileşenin içinde tanımlarsan React her
+     render'da abonelikten çıkıp yeniden abone olur. Modül seviyesine taşı ya da
+     `useCallback` ile sabitle.
+</Callout>
+
+## Custom hook tasarım kuralları
+
+- **Somut isim ver.** `useChatRoom`, `useOnlineStatus` iyi; `useAsync`,
+  `useMagic` kötü. Adından ne yaptığı anlaşılmalı.
+- **Yaşam döngüsü sarmalayıcısı yazma.** `useMount(fn)` gibi hook'lar bağımlılık
+  kurallarını gizler ve stale closure üretir. `useEffect`'i doğrudan kullan.
+- **Veri akışı görünür olsun.** `const veri = useVeri(url)` iyi; hiçbir şey alıp
+  vermeyen ama gizlice state değiştiren bir hook kötü.
+- **Callback prop'larını `useEffectEvent` ile sar.** Kullanıcının verdiği
+  `onMessage` her render değişirse effect gereksiz yere yeniden kurulur.
+  (Bkz. [useEffect](/docs/react/effects))
+- **Soyutlamayı sonra yap.** Aynı mantık üç yerde tekrarlanmadan hook'a çıkarma;
+  erken soyutlama yanlış API üretir.
+
+## Mülakat soruları
+
+### Soru 1 — aynı hook, paylaşılan state mi?
+
+```jsx
+function A() { const [n] = useSayac(); }
+function B() { const [n] = useSayac(); }
+```
+
+`A` sayacı artırınca `B` görür mü?
+
+**Cevap:** Hayır. Custom hook **mantığı** paylaşır, state'i değil; her çağrı
+kendi `useState`'ini kurar. Paylaşım isteniyorsa state ortak ataya taşınmalı
+veya context kullanılmalı.
+
+### Soru 2 — memo context'i durdurur mu?
+
+```jsx
+const Panel = memo(function Panel() {
+  const tema = useContext(TemaContext);
+  return <div className={tema} />;
+});
+```
+
+Tema değişince `Panel` render olur mu?
+
+**Cevap:** Evet. `memo` sadece **props**'u karşılaştırır; context ayrı bir
+kanaldır. Bu davranışı engellemenin yolu yok — çözüm context'i bölmek veya
+selector destekli bir store kullanmaktır.
+
+### Soru 3 — bu provider neden herkesi render ediyor?
+
+```jsx
+<AuthContext value={{ kullanici, cikisYap }}>
+```
+
+**Cevap:** `value` inline bir nesne; provider her render olduğunda yeni referans
+üretiliyor ve `Object.is` `false` dönüyor. Tüketiciler, `kullanici` hiç
+değişmese bile render oluyor. Çözüm `useMemo` ile sarmak.
+
+### Soru 4 — `use` öneki olmadan olur mu?
+
+```jsx
+function getOnlineStatus() {
+  const [online, setOnline] = useState(true);
+  // ...
+}
+```
+
+**Cevap:** Teknik olarak çalışır ama yapılmamalı. Linter `use` görmediği için
+hook kurallarını uygulamaz; fonksiyon bir `if` içinde çağrılırsa hook sırası
+bozulur ve fark edilmesi zor hatalar çıkar. Ters durum da geçerli: hook
+çağırmayan bir fonksiyona `use` öneki vermek gereksiz kısıt getirir.
+
+### Soru 5 — prop drilling'i nasıl çözersin?
+
+**Cevap:** Sırayla: **(1)** İki üç seviyeyse çözme — açık props okunabilirliktir.
+**(2)** Bileşeni çıkarıp JSX'i `children` olarak geçir; vakaların çoğu aslında
+kompozisyon problemidir. **(3)** Gerçekten uzak ve çok sayıda tüketici varsa
+context. **(4)** Sık değişen veya seçici okunması gereken state için dış store.
+
+### Soru 6 — hangisi context'e uygun değil?
+
+(a) Tema (b) Oturum açmış kullanıcı (c) Formun anlık input değeri (d) Dil tercihi
+
+**Cevap:** (c). Her tuş vuruşunda context değeri değişir ve **tüm tüketiciler**
+render olur. Form state'i onu kullanan bileşende yerel kalmalıdır.
+
+<CheatSheet
+  title="Özet"
+  rows={[
+    { term: "custom hook", meaning: "İçinde hook çağıran fonksiyon. MANTIĞI paylaşır, state'i değil." },
+    { term: "use öneki", meaning: "Linter'a 'burada hook kuralları geçerli' der. Hook yoksa kullanma." },
+    { term: "her çağrı bağımsız", meaning: "İki bileşen aynı hook'u kullanınca iki ayrı state olur." },
+    { term: "context 3 adım", meaning: "createContext → <Context value> → useContext. React 19'da .Provider gereksiz." },
+    { term: "en yakın provider", meaning: "Bileşen üstündeki en yakını okur. Kendi döndürdüğünü okuyamaz." },
+    { term: "varsayılan değer", meaning: "Sadece hiç provider yokken. value={undefined} varsa undefined gelir." },
+    { term: "kim render olur", meaning: "Provider altındaki TÜM tüketiciler. Object.is ile karşılaştırılır." },
+    { term: "memo durdurmaz", meaning: "memo props'a bakar; context ayrı kanaldır. Engellenemez." },
+    { term: "inline value", meaning: "value={{...}} her render yeni referans → herkes render olur." },
+    { term: "value çözümü", meaning: "useMemo ile sar, fonksiyonları useCallback ile sabitle." },
+    { term: "seçicilik açığı", meaning: "Context'te 'sadece şu alanı izle' yok. a'yı okuyan b değişince de render olur." },
+    { term: "context'i bölmek", meaning: "Domainler arası çözer, domain içi çözmez." },
+    { term: "yanlış araç", meaning: "Sık değişen değer, form state'i, animasyon. Yerelde tut." },
+    { term: "önce dene", meaning: "Açık props → children ile kompozisyon → context → dış store." },
+    { term: "useDebounce", meaning: "setTimeout + clearTimeout cleanup. Ağ isteğini kısmak için." },
+    { term: "useDeferredValue", meaning: "Sadece render'ı geciktirir. Ağ isteğini kısmaz." },
+    { term: "useLocalStorage", meaning: "useState değil useSyncExternalStore: SSR + sekmeler arası + aynı sekme." },
+    { term: "getSnapshot kuralı", meaning: "Önbelleklenmiş değer döndürmeli; ham string döndürüp useMemo'da ayrıştır." },
+    { term: "subscribe kuralı", meaning: "Kararlı olmalı — modül seviyesinde tanımla." },
+  ]}
+/>
+
+## Kaynaklar
+
+- [react.dev — Reusing Logic with Custom Hooks](https://react.dev/learn/reusing-logic-with-custom-hooks)
+- [react.dev — Passing Data Deeply with Context](https://react.dev/learn/passing-data-deeply-with-context)
+- [react.dev — `useContext`](https://react.dev/reference/react/useContext)
+- [react.dev — `useSyncExternalStore`](https://react.dev/reference/react/useSyncExternalStore)
+- [react.dev — `useDeferredValue`](https://react.dev/reference/react/useDeferredValue)
+- [react.dev — React 19 (Context as a provider)](https://react.dev/blog/2024/12/05/react-19)
